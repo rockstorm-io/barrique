@@ -4,10 +4,10 @@ description = "Portable binary serialiation format"
 version = "1.0.0"
 edition = "2021"
 repository = "https://github.com/rockstorm-io/barrique"
-license = "GPL-3"
+license = "GPL-3.0-or-later"
 
 [dependencies]
-barrique_derive = "0.1.0"
+barrique_derive = { version = "0.1.0", path = "derive" }
 thiserror = "2.0.17"
 twox-hash = "2.1.2"
 lz4-sys = "1.11.0"
