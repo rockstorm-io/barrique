@@ -6,7 +6,7 @@
 //! }
 //! ```
 
-use crate::{DeriveArgs, Field, SkipBy, struct_member};
+use crate::{DeriveArgs, Field, struct_member};
 
 use quote::{quote, quote_spanned};
 use proc_macro2::TokenStream;

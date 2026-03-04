@@ -1,12 +1,13 @@
 [package]
 name = "barrique"
+description = "Portable binary serialiation format"
 version = "1.0.0"
 edition = "2021"
 repository = "https://github.com/rockstorm-io/barrique"
 license = "GPL-3"
 
 [dependencies]
-derive = { version = "0.1.0", path = "./derive" }
+derive = { version = "0.1.0", path = "./derive", optional = false }
 thiserror = "2.0.17"
 twox-hash = "2.1.2"
 lz4-sys = "1.11.0"

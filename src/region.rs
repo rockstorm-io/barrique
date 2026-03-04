@@ -7,6 +7,8 @@ use core::ptr::copy_nonoverlapping;
 use core::slice::SliceIndex;
 use core::num::NonZeroU64;
 
+use alloc::vec::Vec;
+
 use twox_hash::XxHash64;
 
 /// Maximum size of region body.

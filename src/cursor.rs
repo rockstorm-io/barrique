@@ -5,12 +5,11 @@ use crate::decode::{ReadError, ReadResult, Reader};
 use crate::encode::{WriteError, WriteResult, Writer};
 
 use core::mem::MaybeUninit;
-use core::cell::UnsafeCell;
-use core::cmp::min;
 
 #[cfg(feature = "std")]
 use std::io::{Read, Write};
-use std::mem::ManuallyDrop;
+#[cfg(feature = "std")]
+use core::cell::UnsafeCell;
 
 /// A wrapper for any type implementing [`AsRef<[u8]>`] or [`AsMut<[u8]>`]
 /// providing implementations of [`Reader`] and [`Writer`] traits.
@@ -147,7 +146,7 @@ impl IncrementalBuffer {
 
     /// Marks next `n` bytes starting from the current cursor as consumed
     fn consume(&mut self, n: usize) {
-        self.position = min(self.position + n, self.buffer.len());
+        self.position = core::cmp::min(self.position + n, self.buffer.len());
     }
 
     /// Increments the length by `n`.
@@ -202,6 +201,7 @@ impl IncrementalBuffer {
 /// [`StreamEncoder`]: crate::encode::StreamEncoder
 /// [`std::io::Write`]: Write
 /// [`std::io::Read`]: Read
+#[cfg(feature = "std")]
 pub struct CursorView<T>(UnsafeCell<CursorViewInner<T>>);
 
 #[cfg(feature = "std")]

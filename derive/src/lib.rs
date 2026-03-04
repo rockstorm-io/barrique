@@ -1,9 +1,10 @@
+use darling::{FromDeriveInput, FromField, FromMeta, FromVariant};
 use darling::ast::{Data, Fields};
-use darling::{FromDeriveInput, FromField, FromMeta, FromVariant, Result};
-use proc_macro::TokenStream;
+
 use proc_macro2::{Ident, Span};
-use quote::{ToTokens, quote};
-use syn::{AttrStyle, Attribute, DeriveInput, Expr, ExprPath, Generics, Type, TypeGenerics, Visibility, parse_macro_input, Member, Token, LitInt};
+use proc_macro::TokenStream;
+
+use syn::{DeriveInput, Expr, ExprPath, Generics, Type, Visibility, parse_macro_input, Member, Token, LitInt};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 
@@ -47,7 +48,7 @@ pub(crate) struct DeriveArgs {
     ident: Ident,
     data: DeriveData,
     generics: Generics,
-    vis: Visibility,
+    _vis: Visibility,
     
     #[darling(default)]
     tag_repr: Option<Type>,
