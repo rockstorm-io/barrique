@@ -28,7 +28,7 @@ enum World {
 }
 ```
 
-Visit [Docs](https:/docs.rs/barrique) for more information.
+Visit [Docs](https://docs.rs/barrique) for more information.
 
 ## Specification
 
