@@ -96,8 +96,8 @@ extern crate alloc;
 extern crate core;
 
 #[cfg(feature = "derive")]
-pub use derive::{Encode, Decode};
-pub(crate) use derive::tuple_drop_guard;
+pub use barrique_derive::{Encode, Decode};
+pub(crate) use barrique_derive::tuple_drop_guard;
 
 pub mod cursor;
 pub mod decode;
