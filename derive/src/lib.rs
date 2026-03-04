@@ -161,6 +161,7 @@ impl Parse for TupleGuardInput {
 }
 
 #[proc_macro]
+#[doc(hidden)]
 pub fn tuple_drop_guard(token_stream: TokenStream) -> TokenStream {
     let input = parse_macro_input!(token_stream as TupleGuardInput);
     tuple_drop_guard::impl_input(input).into()
