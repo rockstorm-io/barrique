@@ -1,6 +1,6 @@
 ![Logo](https://github.com/rockstorm-io/barrique/blob/main/LOGO.png?raw=true)
 ##
-[![License](https://img.shields.io/github/license/rockstorm-io/barrique)](LICENSE)
+[![License](https://img.shields.io/crates/l/barrique)](LICENSE)
 [![Version](https://img.shields.io/crates/v/barrique)](https://crates.io/crates/barrique)
 
 Barrique is a schema-based binary serialization format featuring compression, metadata and streaming. The format was designed for locally storing large (>8 MiB) long-term memory objects.
