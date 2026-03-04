@@ -1,0 +1,87 @@
+        BARRIQUE SERIALIZATION FORMAT SPECIFICATION
+                 Version 1, 03/04/2026
+
+Region
+    - the core primitive storing encoded data. The layout
+    defined as following:
+
++================++======================================+
+|     Header     ||                 Data                 |
++================++======================================+
+
+    size of uncompressed data can not be more than
+    `2^16 - 1` bytes.
+
+Header
+    - header of the region, containing a length of contiguous
+    Data block,size of uncompressed data, both encoded as
+    LE unsigned 16-bit integers, and a result of XXHASH64
+    hash function performed on uncompressed contents of
+    the Data block encoded as a LE 64-bit integer.
+    The layout defined as following:
+
++========++==============++==============================+
+| Length || Initial size ||             Hash             |
++========++==============++==============================+
+                  total size: 12 bytes
+Data
+    - sequence of raw serialized bytes compressed using LZ4
+    algorithm in block mode. Context of previous region
+    must remain accessible in order to improve compression
+    rations within 64 KiB window size.
+
+Frame
+    - an extended structure holding a sequence of Regions
+    with a magic number and a metadata header. The layout
+    defined as following:
+
++==================++==========+             +==========+
+|   Frame Header   || Region 1 |     ...     | Region N |
++==================++==========+             +==========+
+
+Frame Header
+    - metadata header of Frame composed of a Magic number,
+    a Frame Descriptor and a Label. The layout defined
+    as following:
+
++==============++==================++===================+
+| Magic Number || Frame Descriptor ||       Label       |
++==============++==================++===================+
+
+Magic Number
+    - 0x96EBCEA9. Encoded as a LE 64-bit integer.
+
+Frame Descriptor
+    - a variable-length block composed of a byte which bit
+    values represent certain flags of the parent frame and
+    an optional timestamp value. Available flags are:
+        Seeded - indicates whether the hashes of the
+        regions stored in the frame computed with
+        seed.
+        Timestamp Included - indicates whether this Frame
+        Descriptor contains a timestamp value.
+    The layout defined as following:
+
++=================++====================================+
+| Descriptor Byte ||        Timestamp (optional)        |
++=================++====================================+
+
+    The bit layout of descriptor byte defined as following:
+
++========++====================++=======================+
+| Seeded || Timestamp Included ||    Reserved Space     |
++========++====================++=======================+
+   bit 7           bit 6                bits 0..6
+
+Timestamp
+    - generic timestamp value encoded as LE 64-bit integer.
+
+Label
+    - variable-length ASCII string limited to 255 bytes.
+    The layout defined as following:
+    
++========++=============================================+
+| Length ||        String (Length bytes long)           |
++========++=============================================+
+
+    Length encoded as a single byte.
