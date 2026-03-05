@@ -6,6 +6,8 @@ edition = "2021"
 repository = "https://github.com/rockstorm-io/barrique"
 readme = "CRATE_README.md"
 license = "GPL-3.0-or-later"
+categories = ["encoding"]
+keywords = ["binary", "serialize", "deserialize"]
 
 [dependencies]
 barrique_derive = { version = "0.1.0", path = "derive" }
@@ -14,6 +16,7 @@ twox-hash = "2.1.2"
 lz4-sys = "1.11.0"
 
 [features]
+default = ["std"]
 derive = []
 std = []
 

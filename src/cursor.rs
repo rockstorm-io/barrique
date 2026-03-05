@@ -169,14 +169,14 @@ impl IncrementalBuffer {
     }
 }
 
-/// A cursor for incremental windows of data.
+/// A cursor for incremental window of data.
 ///
 /// This struct is a wrapper for types implementing [`std::io::Read`]
 /// or [`std::io::Write`], providing implementations of [`Reader`]
 /// and [`Writer`] accordingly.
 ///
-/// Behavior of this wrapper can be described as a sequence of IO requests
-/// which results stored in a buffer and drained dynamically.
+/// Results of IO requests performed by this wrapper stored in
+/// a buffer and drained dynamically.
 ///
 /// # Example
 ///
