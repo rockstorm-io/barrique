@@ -262,7 +262,7 @@ impl DoubleBuffer {
 
 /// A buffer for operations on region stream, containing a [`DoubleBuffer`]
 /// and a cursor for tracking current position
-pub struct RegionBuffer {
+pub(crate) struct RegionBuffer {
     buffer: DoubleBuffer,
     cursor: usize,
 }
@@ -401,7 +401,7 @@ mod private {
 /// The [`Push`] authority implementation is a switch of write pipeline:
 /// current contents of the region buffer compressed, structured into
 /// a region format and flushed into internal destination
-pub trait SwitchAuthority: private::Sealed {
+pub(crate) trait SwitchAuthority: private::Sealed {
     /// Perform a state switch on the `buf` passed
     fn pass(&mut self, buf: &mut Vec<u8>) -> Result<(), RegionError>;
 }

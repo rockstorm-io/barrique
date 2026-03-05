@@ -1,9 +1,10 @@
 [package]
 name = "barrique"
 description = "Portable binary serialiation format"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 repository = "https://github.com/rockstorm-io/barrique"
+readme = "CRATE_README.md"
 license = "GPL-3.0-or-later"
 
 [dependencies]
@@ -15,6 +16,10 @@ lz4-sys = "1.11.0"
 [features]
 derive = []
 std = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs", "-D", "warnings"]
 
 [workspace]
 members = ["derive"]

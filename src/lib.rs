@@ -17,7 +17,7 @@
 //! #[derive(Encode, Decode, Clone, PartialEq)]
 //! struct Bee {
 //!     name: String,
-//!     state: State
+//!     state: State,
 //!     #[barrique(skip)]
 //!     age: u8,
 //! }
