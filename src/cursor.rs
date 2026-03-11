@@ -188,7 +188,7 @@ impl IncrementalBuffer {
 /// let src = File::create("large_file.bin").unwrap();
 /// let src = CursorView::new(src);
 ///
-/// let mut bearer = StreamEncoder::new(&mut src, 0.into(), AllocOrd::Full);
+/// let mut bearer = StreamEncoder::new(&mut src, 0.into(), AllocOrd::full());
 /// <String as Encode>::encode(&mut bearer, String::new("Hello, world!").as_str())
 ///     .unwrap();
 ///

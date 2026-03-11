@@ -246,7 +246,7 @@ where
     /// which does not reallocate internal buffer
     pub fn new<E>(dst: W, seed: Seed, ord: AllocOrd<E>) -> Self
     where
-        E: Encode,
+        E: Encode
     {
         Self {
             region_buffer: RegionBuffer::new(ord.cap()),

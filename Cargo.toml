@@ -10,7 +10,7 @@ categories = ["encoding"]
 keywords = ["binary", "serialize", "deserialize"]
 
 [dependencies]
-barrique_derive = { version = "0.1.0", path = "derive" }
+barrique_derive = { version = "0.1.1", path = "derive" }
 thiserror = "2.0.17"
 twox-hash = "2.1.2"
 lz4-sys = "1.11.0"

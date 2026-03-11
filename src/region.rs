@@ -2,7 +2,6 @@ use crate::decode::{ReadError, Reader};
 use crate::encode::{write_to_uninit, Encode, WriteError, Writer};
 use crate::lz4::{compress_bound, CompressStream, DecompressStream};
 
-use core::marker::PhantomData;
 use core::ptr::copy_nonoverlapping;
 use core::slice::SliceIndex;
 use core::num::NonZeroU64;
@@ -135,7 +134,7 @@ impl From<NonZeroU64> for Seed {
 /// # Default value
 ///
 /// Default value of [`AllocOrd`] is 4 KiB
-pub enum AllocOrd<T = PhantomData<()>>
+pub enum AllocOrd<T = ()>
 where
     T: Encode,
 {
@@ -150,6 +149,20 @@ where
 impl Default for AllocOrd {
     fn default() -> Self {
         AllocOrd::Manual(4 * 1024)
+    }
+}
+
+impl AllocOrd {
+    /// `AllocOrd::<()>::Full`
+    #[inline]
+    pub fn full() -> Self {
+        AllocOrd::Full
+    }
+
+    /// `AllocOrd::<()>::Manual`
+    #[inline]
+    pub fn manual(count: usize) -> Self {
+        AllocOrd::Manual(count as isize)
     }
 }
 

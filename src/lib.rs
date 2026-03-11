@@ -14,15 +14,15 @@
 //! use barrique::frame::Frame;
 //! use barrique::region::Seed;
 //!
-//! #[derive(Encode, Decode, Clone, PartialEq)]
+//! #[derive(Encode, Decode, Clone, Debug, PartialEq)]
 //! struct Bee {
 //!     name: String,
 //!     state: State,
-//!     #[barrique(skip)]
+//!     #[barrique(skip(default_expr = "2"))]
 //!     age: u8,
 //! }
 //!
-//! #[derive(Encode, Decode, Clone, PartialEq)]
+//! #[derive(Encode, Decode, Clone, Debug, PartialEq)]
 //! #[barrique(tag_repr = "u8")]
 //! enum State {
 //!     Collecting(i32, i32),
@@ -33,19 +33,20 @@
 //! }
 //!
 //! let bee = Bee {
-//!     name: "Oh, hey!",
+//!     name: "Oh, hey!".to_string(),
 //!     state: State::Sleeping,
 //!     age: 2
 //! };
 //! let mut dst = vec![];
 //!
 //! let frame = Frame::new(&mut dst, Seed::new(0))
-//!     .with_label("A beehive");
-//! frame.encode(bee.clone());
+//!     .with_label("A beehive".try_into().unwrap());
+//! frame.encode(bee.clone()).unwrap();
 //!
-//! let frame = Frame::decode(&dst, Seed::new(0))
+//! let frame: Frame<Bee, _> = Frame::decode(dst.as_slice(), Seed::new(0))
 //!     .expect("Failed to open a frame");
-//! assert_eq!(frame.get_value().unwrap(), bee);
+//!
+//! assert_eq!(frame.get_value(AllocOrd::default()).unwrap(), bee);
 //! ```
 //!
 //! `Frame` is specification-defined format wrapping a stream primitive. Streams
@@ -76,11 +77,11 @@
 //! let file = File::create("serialized.bin").unwrap();
 //! let mut dst = CursorView::new(file);
 //!
-//! let mut encoder = StreamEncoder::new(&mut dst, Seed::new(0), AllocOrd::Full);
+//! let mut encoder = StreamEncoder::new(&mut dst, Seed::new(0), AllocOrd::full());
 //! <str as Encode>::encode(&mut encoder, "Hello, world!").unwrap();
 //!
-//! encoder.flush();
-//! dst.flush();
+//! encoder.flush().unwrap(); // Buffer -> `dst`
+//! dst.flush().unwrap(); // `dst` -> File
 //! ```
 //!
 //! # `no_std` support
@@ -107,8 +108,3 @@ pub mod r#impl;
 pub mod region;
 
 mod lz4;
-
-mod tests {
-    #[test]
-    fn it_works() {}
-}

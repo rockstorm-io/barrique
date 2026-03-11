@@ -494,7 +494,7 @@ where
     ///     panic!("Invalid label: possibly incorrect contents");
     /// }
     ///
-    /// let _ = frame.get_value(AllocOrd::Manual(bytes.len()));
+    /// let _ = frame.get_value(AllocOrd::manual(bytes.len()));
     /// ```
     ///
     /// # Metadata considerations
