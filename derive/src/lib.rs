@@ -48,55 +48,12 @@ pub(crate) struct DeriveArgs {
     ident: Ident,
     data: DeriveData,
     generics: Generics,
-    _vis: Visibility,
+    #[allow(dead_code)]
+    vis: Visibility,
     
     #[darling(default)]
     tag_repr: Option<Type>,
 }
-
-// /// Check if given collection of attributes has `#[repr(transparent)]` or `#[repr(C)]`.
-// ///
-// /// This is a basic proc-macro level UB check for `transmute` attribute, which will
-// /// result in incorrect pointer cast if implementing type has variable layout
-// pub(crate) fn valid_to_transmute_repr(attrs: &[Attribute]) -> syn::Result<()> {
-//     for attr in attrs {
-//         if !attr.path().is_ident("repr") {
-//             continue;
-//         }
-// 
-//         return attr.parse_nested_meta(|meta| {
-//             if meta.path.is_ident("transparent") || meta.path.is_ident("C") {
-//                 return Ok(());
-//             }
-//             Err(meta.error("`#[barrique(transmute = \"...\")]` requires either `#[repr(C)]` or `#[repr(transparent)]`"))
-//         });
-//     }
-//     Err(syn::Error::new(
-//         Span::call_site(),
-//         "Cannot implement `#[barrique(transmute = \"...\")]` for `#[repr(Rust)]` type",
-//     ))
-// }
-// 
-// /// Generate static assertions of cast between `ident` and `transmute_to`
-// pub(crate) fn transmute_assert(
-//     ident: &Ident,
-//     transmute_to: &Type,
-//     generics: &TypeGenerics,
-// ) -> proc_macro2::TokenStream {
-//     if generics.to_token_stream().is_empty() {
-//         quote! {
-//             const _: () = {
-//                 let _ = core::mem::transmute::<#ident, #transmute_to>;
-//                 let _: [(); core::mem::size_of::<#ident>()] = [(); core::mem::size_of::<#transmute_to>()];
-//             };
-//         }
-//     } else {
-//         // If implementing type has generics, we are not able to perform
-//         // static assertion since generic parameters make a type
-//         // variable-sized
-//         quote! {}
-//     }
-// }
 
 /// Returns a cycling iterator over anonymous identifiers.
 ///
