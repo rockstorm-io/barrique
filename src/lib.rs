@@ -108,3 +108,83 @@ pub mod r#impl;
 pub mod region;
 
 mod lz4;
+
+#[cfg(test)]
+mod tests {
+    use std::mem::MaybeUninit;
+    use crate::decode::{Decode, StreamDecoder};
+    use crate::encode::{Encode, StreamEncoder};
+    use crate::frame::Frame;
+    use crate::region::{AllocOrd, Push, RegionBuffer, Seed};
+
+    #[test]
+    fn back_and_forth() {
+        let sample = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let mut dst = vec![];
+
+        let mut encoder = StreamEncoder::new(
+            &mut dst,
+            Seed::new(0),
+            AllocOrd::default()
+        );
+
+        Encode::encode(&mut encoder, &sample).unwrap();
+        encoder.flush().unwrap();
+
+        let mut decoder = StreamDecoder::new(
+            dst.as_slice(),
+            Seed::new(0),
+            AllocOrd::default()
+        ).unwrap();
+
+        let mut value = MaybeUninit::uninit();
+        <[i32; 10] as Decode>::decode(&mut decoder, &mut value).unwrap();
+        assert_eq!(unsafe { value.assume_init() }, sample);
+    }
+
+    #[test]
+    fn frame_back_and_forth() {
+        let sample = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let mut dst = vec![];
+
+        let frame = Frame::new(&mut dst, Seed::new(0));
+        frame.encode(sample).unwrap();
+
+        let frame = Frame::<[i32; 10], _>::decode(dst.as_slice(), Seed::new(0)).unwrap();
+        assert_eq!(frame.get_value(AllocOrd::default()).unwrap(), sample);
+    }
+
+    #[test]
+    fn frame_metadata() {
+        let mut dst = vec![];
+
+        let frame = Frame::<(), _>::new(&mut dst, Default::default())
+            .with_label("A snack".try_into().unwrap())
+            .with_timestamp(u64::MAX);
+        frame.encode(()).unwrap();
+
+        let frame = Frame::<(), _>::decode(dst.as_slice(), Default::default()).unwrap();
+
+        assert_eq!(frame.get_label().unwrap().as_str(), "A snack");
+        assert_eq!(frame.get_timestamp().unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn assert_region_static() {
+        let sample = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let serialized_static: [u8; _]
+            = [11, 0, 10, 0, 89, 50, 109, 105, 206, 198, 199, 29, 160, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+
+        let mut dst = vec![];
+        let mut authority = Push::new(&mut dst, Seed::new(0));
+
+        let mut region = RegionBuffer::new(AllocOrd::default().cap());
+        unsafe {
+            // Safety: `sample` is an owned array
+            region.write_nonoverlapping(&sample);
+        }
+        region.pass(&mut authority).unwrap();
+
+        assert_eq!(dst, serialized_static);
+    }
+}
