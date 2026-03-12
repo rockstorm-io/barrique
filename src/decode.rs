@@ -134,8 +134,8 @@ pub trait DecodeBearer: private::Sealed {
 /// ```
 /// use std::mem::MaybeUninit;
 ///
-/// let src = std::fs::read("stream.bin");
-/// let mut bearer = StreamDecoder::new(&src, 0, Default::default());
+/// let src = std::fs::read("stream.bin").unwrap();
+/// let mut bearer = StreamDecoder::new(&src, 0.into(), Default::default());
 ///
 /// let mut string = MaybeUninit::uninit();
 /// <String as Decode>::decode(&mut bearer, &mut string).unwrap();
@@ -178,7 +178,7 @@ where
     /// use barrique::decode::{AllocOrd, StreamDecoder};
     ///
     /// let src = vec![];
-    /// let mut bearer = StreamDecoder::new(&src, 0, Default::default());
+    /// let mut bearer = StreamDecoder::new(&src, 0.into(), Default::default());
     ///
     /// // In this example read of a first region will always fail
     /// // since we've passed an empty slice
@@ -217,7 +217,7 @@ where
     /// use barrique::decode::{AllocOrd, StreamDecoder};
     ///
     /// let src = std::fs::read("serialized_1.bin").unwrap();
-    /// let mut bearer = StreamDecoder::new(&src, 0, Default::default())
+    /// let mut bearer = StreamDecoder::new(&src, 0.into(), Default::default())
     ///     .expect("Failed to initialize a bearer");
     ///
     /// // Doing some work on `src` contents ...
