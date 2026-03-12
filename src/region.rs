@@ -36,6 +36,7 @@ pub const fn max_encoded_size(size: usize) -> usize {
 ///
 /// ```
 /// use barrique::encode::StreamEncoder;
+/// use barrique::region::Seed;
 ///
 /// let seed = Seed::new(0);
 /// // Now, if we call an actual `Encode` implementation with this bearer,
@@ -48,9 +49,9 @@ pub const fn max_encoded_size(size: usize) -> usize {
 /// ```
 /// use barrique::region::Seed;
 ///
-/// assert!(Seed::empty(), Default::default());
+/// assert_eq!(Seed::empty(), Default::default());
 /// ```
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
 pub struct Seed {
     inner: u64,
@@ -117,14 +118,14 @@ impl From<NonZeroU64> for Seed {
 /// An example of hinting size of a value which will be encoded:
 ///
 /// ```
-/// use barrique::region::AllocOrd;
+/// use barrique::region::{AllocOrd, Seed};
 /// use barrique::encode::StreamEncoder;
 ///
-/// let value = String::new("Hello, world!");
+/// let value = String::from("Hello, world!");
 /// let ord = AllocOrd::Auto(&value);
 ///
 /// // `AllocOrd::Auto` usually applied to encode bearers only
-/// let mut encoder = StreamEncoder::new(vec![], 0, ord);
+/// let mut encoder = StreamEncoder::new(vec![], Seed::new(0), ord);
 ///
 /// // Now, if we call value's implementation, bearer will exactly
 /// // fit encoded bytes without any remaining capacity:
@@ -444,6 +445,11 @@ where
         }
     }
 
+    /// Returns contained reader, consuming `self`
+    pub fn into_source(self) -> R {
+        self.source
+    }
+
     /// Returns contained region hash seed
     pub const fn seed(&self) -> Seed {
         self.seed
@@ -518,8 +524,8 @@ where
     W: Writer,
 {
     stream: CompressStream,
+    destination: W,
     seed: Seed,
-    writer: W,
 }
 
 impl<W> Push<W>
@@ -530,12 +536,17 @@ where
     pub fn new(dst: W, seed: Seed) -> Self {
         Self {
             stream: CompressStream::new(),
-            writer: dst,
+            destination: dst,
             seed,
         }
     }
 
-    /// Return contained region hash seed
+    /// Returns contained writer, consuming `self`
+    pub fn into_destination(self) -> W {
+        self.destination
+    }
+
+    /// Returns contained region hash seed
     pub const fn seed(&self) -> Seed {
         self.seed
     }
@@ -558,7 +569,7 @@ where
         }
 
         let size = compress_bound(buf.len()) + HEADER_SIZE;
-        let arena = self.writer.allocate(size)?;
+        let arena = self.destination.allocate(size)?;
 
         // Similarly to `Pull` implementation, we check for incorrect implementation
         assert_eq!(
@@ -599,7 +610,7 @@ where
             // - commitment of `n` can not overflow since `compressed` can't be
             //   greater than `compress_bound`, which is the size of requested
             //   allocation without header bytes
-            self.writer.commit(HEADER_SIZE + compressed);
+            self.destination.commit(HEADER_SIZE + compressed);
         }
         Ok(())
     }

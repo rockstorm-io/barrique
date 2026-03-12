@@ -482,15 +482,16 @@ where
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust, no_run
+    /// use barrique::region::{AllocOrd, Seed};
     /// use barrique::frame::Frame;
-    /// use barrique::region::AllocOrd;
     ///
     /// let bytes = std::fs::read("serialized.bin").unwrap();
-    /// let frame = Frame::decode(&bytes, 0).expect("Failed to open a frame");
+    /// let frame = Frame::<(), _>::decode(bytes.as_slice(), Seed::new(0))
+    ///     .expect("Failed to open a frame");
     ///
     /// // Verify the label of our frame
-    /// if frame.get_label() != "Verified".into() {
+    /// if frame.get_label() != Some(&"Verified".try_into().unwrap()) {
     ///     panic!("Invalid label: possibly incorrect contents");
     /// }
     ///

@@ -181,15 +181,19 @@ impl IncrementalBuffer {
 /// # Example
 ///
 /// Usage within [`StreamEncoder`]:
-/// ```
+/// 
+/// ```rust, no_run
+/// use barrique::encode::{StreamEncoder, Encode};
 /// use barrique::cursor::CursorView;
+/// use barrique::region::{AllocOrd, Seed};
+///
 /// use std::fs::File;
 ///
 /// let src = File::create("large_file.bin").unwrap();
-/// let src = CursorView::new(src);
+/// let mut src = CursorView::new(src);
 ///
-/// let mut bearer = StreamEncoder::new(&mut src, 0.into(), AllocOrd::full());
-/// <String as Encode>::encode(&mut bearer, String::new("Hello, world!").as_str())
+/// let mut bearer = StreamEncoder::new(&mut src, Seed::new(0), AllocOrd::full());
+/// <String as Encode>::encode(&mut bearer, &String::from("Hello, world!"))
 ///     .unwrap();
 ///
 /// let dst = File::open("large_file.bin").unwrap();

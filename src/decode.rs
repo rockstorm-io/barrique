@@ -131,11 +131,13 @@ pub trait DecodeBearer: private::Sealed {
 ///
 /// # Example
 ///
-/// ```
-/// use std::mem::MaybeUninit;
+/// ```rust, no_run
+/// use barrique::decode::{StreamDecoder, Decode};
+/// use core::mem::MaybeUninit;
 ///
 /// let src = std::fs::read("stream.bin").unwrap();
-/// let mut bearer = StreamDecoder::new(&src, 0.into(), Default::default());
+/// let mut bearer = StreamDecoder::new(src.as_slice(), 0.into(), Default::default())
+///     .unwrap();
 ///
 /// let mut string = MaybeUninit::uninit();
 /// <String as Decode>::decode(&mut bearer, &mut string).unwrap();
@@ -175,14 +177,15 @@ where
     /// # Example
     ///
     /// ```
-    /// use barrique::decode::{AllocOrd, StreamDecoder};
+    /// use barrique::decode::StreamDecoder;
+    /// use barrique::region::AllocOrd;
     ///
     /// let src = vec![];
-    /// let mut bearer = StreamDecoder::new(&src, 0.into(), Default::default());
+    /// let mut bearer = StreamDecoder::new(src.as_slice(), 0.into(), Default::default());
     ///
     /// // In this example read of a first region will always fail
     /// // since we've passed an empty slice
-    /// assert_eq!(bearer, Err(_));
+    /// assert!(bearer.is_err());
     /// ```
     ///
     /// # Allocation semantics
@@ -205,7 +208,7 @@ where
         Ok(bearer)
     }
 
-    /// Replace the source of this decoder with a new one.
+    /// Replaces the source of this decoder with a new one
     ///
     /// Unlike [`StreamDecoder::relocate_with_seed`], region hash remains
     /// unchanged, making this method useful in cases of operating on
@@ -213,11 +216,12 @@ where
     ///
     /// # Example
     ///
-    /// ```
-    /// use barrique::decode::{AllocOrd, StreamDecoder};
+    /// ```rust, no_run
+    /// use barrique::decode::StreamDecoder;
+    /// use barrique::region::AllocOrd;
     ///
     /// let src = std::fs::read("serialized_1.bin").unwrap();
-    /// let mut bearer = StreamDecoder::new(&src, 0.into(), Default::default())
+    /// let mut bearer = StreamDecoder::new(src.as_slice(), 0.into(), Default::default())
     ///     .expect("Failed to initialize a bearer");
     ///
     /// // Doing some work on `src` contents ...
@@ -228,17 +232,20 @@ where
     ///
     /// // Now we can process contents of the new `src` ...
     /// ```
-    pub fn relocate(&mut self, src: R) -> Result<(), RegionError> {
+    pub fn relocate(&mut self, src: R) -> Result<R, RegionError> {
         self.relocate_with_seed(src, self.authority.seed())
     }
 
-    /// Replace the source and the seed of this decoder with new values.
+    /// Replaces the source and the seed of this decoder with new values,
+    /// returning the previous source.
     ///
     /// This method differs from the main constructor in a way that it doesn't
     /// reconstruct the inner region buffer, avoiding reallocation.
-    pub fn relocate_with_seed(&mut self, src: R, seed: Seed) -> Result<(), RegionError> {
-        self.authority = Pull::new(src, seed);
-        self.region_buffer.pass(&mut self.authority)
+    pub fn relocate_with_seed(&mut self, src: R, seed: Seed) -> Result<R, RegionError> {
+        let old = core::mem::replace(&mut self.authority, Pull::new(src, seed));
+        self.region_buffer.pass(&mut self.authority)?;
+
+        Ok(old.into_source())
     }
 }
 

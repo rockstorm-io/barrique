@@ -180,14 +180,14 @@ pub trait EncodeBearer: private::Sealed {
 /// Encoding a [`String`]:
 ///
 /// ```
-/// use barrique::encode::StreamEncoder;
+/// use barrique::encode::{StreamEncoder, Encode};
 /// use barrique::region::{max_encoded_size, AllocOrd};
 ///
-/// let value = String::new("That's a barrique");
+/// let value = String::from("That's a barrique");
 /// let mut dst = Vec::with_capacity(max_encoded_size(value.len()));
 ///
 /// let mut bearer = StreamEncoder::new(&mut dst, 0.into(), AllocOrd::Auto(&value));
-/// String::encode(&mut bearer, &value).unwrap();
+/// <String as Encode>::encode(&mut bearer, &value).unwrap();
 ///
 /// // Final flush performed by the caller
 /// bearer.flush().unwrap();
@@ -255,7 +255,7 @@ where
     }
 
     /// Flushes the region buffer and replaces the destination of this encoder
-    /// with the new one.
+    /// with the new one, returning the previous destination
     ///
     /// Unlike [`StreamEncoder::relocate_with_seed`], region hash remains
     /// unchanged, making this method useful in cases of operating on
@@ -263,7 +263,7 @@ where
     ///
     /// # Example
     ///
-    /// ```
+    /// ```rust, no_run
     /// use barrique::encode::StreamEncoder;
     /// use barrique::region::Seed;
     ///
@@ -272,14 +272,15 @@ where
     ///
     /// // Encoding a first value ...
     ///
-    /// std::fs::write("serialized_1.bin", dst).unwrap();
-    /// bearer.relocate(&mut dst).expect("Failed to relocate the bearer");
+    /// let mut new_dst = vec![];
+    /// let old_dst = bearer.relocate(&mut new_dst).expect("Failed to relocate the bearer");
+    /// std::fs::write("serialized_1.bin", &old_dst).unwrap();
     /// 
     /// // Encoding a second value ...
     /// 
-    /// std::fs::write("serialized_2.bin", dst).unwrap();
+    /// std::fs::write("serialized_2.bin", new_dst).unwrap();
     /// ```
-    pub fn relocate(&mut self, src: W) -> Result<(), RegionError> {
+    pub fn relocate(&mut self, src: W) -> Result<W, RegionError> {
         self.relocate_with_seed(src, self.authority.seed())
     }
 
@@ -288,11 +289,11 @@ where
     ///
     /// This method differs from the main constructor in a way that it doesn't
     /// reconstruct the inner region buffer, avoiding reallocation.
-    pub fn relocate_with_seed(&mut self, src: W, seed: Seed) -> Result<(), RegionError> {
+    pub fn relocate_with_seed(&mut self, src: W, seed: Seed) -> Result<W, RegionError> {
         self.region_buffer.pass(&mut self.authority)?;
-        self.authority = Push::new(src, seed);
+        let old = core::mem::replace(&mut self.authority, Push::new(src, seed));
         
-        Ok(())
+        Ok(old.into_destination())
     }
 
     /// Flushes the current data in the region buffer
