@@ -151,6 +151,8 @@ mod private {
 /// flush resulting region into generic destination. However, such description
 /// is only applicable for [`EncodeBearer`] since [`DecodeBearer`] has
 /// quite opposite behavior
+/// 
+/// [`DecodeBearer`]: crate::decode::DecodeBearer
 pub trait EncodeBearer: private::Sealed {
     /// Write `bytes` into the region buffer of this bearer.
     ///

@@ -368,6 +368,56 @@ impl FrameDescriptor {
 /// verified. Frame descriptor also holds additional flags to verify pipeline
 /// environment (e.g. seed) and a leading magic number will prevent reading
 /// arbitrary contents
+///
+/// # Example
+///
+/// Storing a cat with proc-macro generated implementations:
+///
+/// ```
+/// use barrique::region::{AllocOrd, Seed};
+/// use barrique::frame::Frame;
+/// use barrique::{Decode, Encode};
+///
+/// use std::time::{SystemTime, UNIX_EPOCH};
+///
+/// #[derive(Encode, Decode)]
+/// struct Cat {
+///     hungry: bool,
+///     state: StateOfCat,
+/// }
+///
+/// #[derive(Encode, Decode)]
+/// enum StateOfCat {
+///     Sleeping,
+///     Purring {
+///         sound_level: u8
+///     },
+/// }
+///
+/// let cat = Cat {
+///     hungry: false,
+///     state: StateOfCat::Purring {
+///         sound_level: 1
+///     }
+/// };
+/// let mut dst = vec![];
+///
+/// let frame = Frame::new(&mut dst, Seed::new(0))
+///     .with_label("A cat".try_into().unwrap())
+///     .with_timestamp(
+///         SystemTime::now()
+///             .duration_since(UNIX_EPOCH)
+///             .unwrap()
+///             .as_secs()
+/// );
+/// frame.encode(cat).unwrap();
+/// ```
+///
+/// The `A cat` label will indicate that a file `dst` written to stores
+/// data representing a cat (similar to, for example, zip comment).
+///
+/// The UNIX timestamp can be used in decoding later if, for example, we need
+/// to validate that the cat we're reading now is the newest one
 pub struct Frame<V, B> {
     _phantom: PhantomData<V>,
     metadata: FrameMetadata,

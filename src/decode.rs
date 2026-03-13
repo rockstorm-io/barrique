@@ -9,7 +9,22 @@ use core::mem::MaybeUninit;
 /// destination slot implementation will write to. Such approach avoids
 /// copying in some cases, but may introduce boilerplate for slot
 /// declaration. This function does this exact setup and
-/// calls `::decode` on the `T` provided
+/// calls `::decode` on the `T` provided.
+///
+/// # Example
+///
+/// ```rust, no_run
+/// use barrique::decode::{get, StreamDecoder};
+/// use barrique::region::AllocOrd;
+///
+/// fn main() {
+///     let src = vec![];
+///     let mut bearer = StreamDecoder::new(src.as_slice(), Default::default(), AllocOrd::default())
+///         .expect("Err is expected since `src` is empty");
+///
+///     let _ = get::<String>(&mut bearer);
+/// }
+/// ```
 #[inline]
 pub fn get<T>(bearer: &mut impl DecodeBearer) -> Result<T, DecodeError>
 where
@@ -66,6 +81,7 @@ pub trait Reader {
 // Reader trait implementations for common types
 
 impl Reader for &[u8] {
+    #[inline]
     fn read_borrow(&self, n: usize) -> ReadResult<&[u8]> {
         self.get(..n).ok_or(ReadError::OutOfBounds)
     }
@@ -79,6 +95,7 @@ impl Reader for &[u8] {
 }
 
 impl Reader for &mut [u8] {
+    #[inline]
     fn read_borrow(&self, n: usize) -> ReadResult<&[u8]> {
         self.get(..n).ok_or(ReadError::OutOfBounds)
     }
@@ -112,12 +129,14 @@ mod private {
 /// interpreting them in [`Decode`] implementation. However, such description
 /// is only applicable for [`DecodeBearer`] since [`EncodeBearer`] has
 /// quite the opposite behavior
+///
+/// [`EncodeBearer`]: crate::encode::EncodeBearer
 pub trait DecodeBearer: private::Sealed {
     /// Request exactly `n` raw bytes.
     ///
     /// # Implementation considerations
     ///
-    /// The only implementation caller can receive is [`StreamDecoder`],
+    /// The only implementation caller can receive right now is [`StreamDecoder`],
     /// which guarantees slice in `Ok` result to have `n` length
     /// exactly.
     ///
