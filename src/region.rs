@@ -2,7 +2,6 @@ use crate::decode::{ReadError, Reader};
 use crate::encode::{write_to_uninit, Encode, WriteError, Writer};
 use crate::lz4::{compress_bound, CompressStream, DecompressStream};
 
-use core::ptr::copy_nonoverlapping;
 use core::slice::SliceIndex;
 use core::num::NonZeroU64;
 
@@ -25,31 +24,16 @@ pub const fn max_encoded_size(size: usize) -> usize {
         + size.div_ceil(REGION_SIZE) * HEADER_SIZE
 }
 
-/// Seed of a region hash.
-///
-/// This struct allows disabling computation of a hash for the region header;
-/// however, the field will not be truncated.
+/// Seed of a region hash, represented in 8 bytes.
 ///
 /// # Examples
-///
-/// Passing an enabled seed:
 ///
 /// ```
 /// use barrique::encode::StreamEncoder;
 /// use barrique::region::Seed;
 ///
 /// let seed = Seed::new(0);
-/// // Now, if we call an actual `Encode` implementation with this bearer,
-/// // resulting stream will contain hash
-/// let _ = StreamEncoder::new(vec![], seed, Default::default());
-/// ```
-///
-/// If you wish to disable hash computation:
-///
-/// ```
-/// use barrique::region::Seed;
-///
-/// assert_eq!(Seed::empty(), Default::default());
+/// let _ = StreamEncoder::new(vec![], Some(seed), Default::default());
 /// ```
 #[derive(Default, Copy, Clone, Debug, PartialEq)]
 #[repr(transparent)]
@@ -58,38 +42,22 @@ pub struct Seed {
 }
 
 // Public methods
+
 impl Seed {
-    /// Constructs a new [`Seed`] indicating an enabled hash field.
-    ///
-    /// Note: actual seed value is incremented by one as the zero seed
-    /// disables the hash computation
+    /// Constructs a new [`Seed`]
     pub fn new(seed: u64) -> Self {
         Self {
-            inner: seed.saturating_add(1),
+            inner: seed,
         }
-    }
-
-    /// Constructs an empty seed, disabling hash field
-    pub fn empty() -> Self {
-        Self { inner: 0 }
     }
 }
 
 // Private methods
-impl Seed {
-    /// Produces a hash of `bytes` if this seed is non-zero, otherwise
-    /// returns zero
-    pub(crate) fn hash(&self, bytes: &[u8]) -> u64 {
-        if self.is_empty() {
-            return 0;
-        }
-        XxHash64::oneshot(self.inner, bytes)
-    }
 
-    /// Checks if this seed equals to `0`, indicating explicitly disabled
-    /// hash inclusion
-    pub(crate) fn is_empty(&self) -> bool {
-        self.inner == 0
+impl Seed {
+    /// Produces a hash of `bytes` using this [`Seed`]
+    pub(crate) fn hash(&self, bytes: &[u8]) -> u64 {
+        XxHash64::oneshot(self.inner, bytes)
     }
 }
 
@@ -118,13 +86,13 @@ impl From<NonZeroU64> for Seed {
 /// An example of hinting size of a value which will be encoded:
 ///
 /// ```
-/// use barrique::region::{AllocOrd, Seed};
+/// use barrique::region::{Size, Seed};
 /// use barrique::encode::StreamEncoder;
 ///
 /// let value = String::from("Hello, world!");
-/// let ord = AllocOrd::Auto(&value);
+/// let ord = Size::Auto(&value);
 ///
-/// // `AllocOrd::Auto` usually applied to encode bearers only
+/// // `Size::Auto` usually applied to encode bearers only
 /// let mut encoder = StreamEncoder::new(vec![], Seed::new(0), ord);
 ///
 /// // Now, if we call value's implementation, bearer will exactly
@@ -134,8 +102,8 @@ impl From<NonZeroU64> for Seed {
 ///
 /// # Default value
 ///
-/// Default value of [`AllocOrd`] is 4 KiB
-pub enum AllocOrd<T = ()>
+/// Default value of [`Size`] is 4 KiB
+pub enum Size<T = ()>
 where
     T: Encode,
 {
@@ -147,27 +115,27 @@ where
     Full,
 }
 
-impl Default for AllocOrd {
+impl Default for Size {
     fn default() -> Self {
-        AllocOrd::Manual(4 * 1024)
+        Size::Manual(4 * 1024)
     }
 }
 
-impl AllocOrd {
-    /// `AllocOrd::<()>::Full`
+impl Size {
+    /// `Size::<()>::Full`
     #[inline]
     pub fn full() -> Self {
-        AllocOrd::Full
+        Size::Full
     }
 
-    /// `AllocOrd::<()>::Manual`
+    /// `Size::<()>::Manual`
     #[inline]
     pub fn manual(count: usize) -> Self {
-        AllocOrd::Manual(count as isize)
+        Size::Manual(count as isize)
     }
 }
 
-impl<T: Encode> AllocOrd<T> {
+impl<T: Encode> Size<T> {
     /// Returns capacity hinted in bytes
     #[inline]
     pub(crate) fn cap(&self) -> usize {
@@ -187,7 +155,7 @@ pub enum RegionError {
     #[error("Failed to allocate capacity to write a region buffer")]
     WriteFailure(#[from] WriteError),
     #[error("Invalid region size hint")]
-    InvalidSizeTip,
+    InvalidSizeHint,
     #[error("Malformed region")]
     MalformedRegion,
     #[error("Hash is not valid for contiguous region")]
@@ -224,7 +192,7 @@ impl DoubleBuffer {
     /// Swaps current and previous buffers
     fn swap(&mut self) {
         let prev = self.prev.get_or_insert_with(|| {
-            // This branch is called only in case of incorrect `AllocOrd` hint,
+            // This branch is called only in case of incorrect `Size` hint,
             // so the allocation is small
             let predict = if self.curr.len() > 4 * 1024 /* 4 Kib */ { self.curr.len() / 4 } else { 256 };
             Vec::with_capacity(predict)
@@ -234,9 +202,9 @@ impl DoubleBuffer {
 
     /// Invokes `pass` method of the given `authority` with access to current buffer.
     ///
-    /// Access to contents of [`DoubleBuffer`] achieved via [`SwitchAuthority`] only, implementations
+    /// Access to contents of [`DoubleBuffer`] achieved via [`StateSwitch`] only, implementations
     /// of which are limited to [`Push`] and [`Pull`]
-    fn authorize_pass<S: SwitchAuthority>(&mut self, authority: &mut S) -> Result<(), RegionError> {
+    fn authorize_pass<S: StateSwitch>(&mut self, authority: &mut S) -> Result<(), RegionError> {
         authority.pass(&mut self.curr)
     }
 
@@ -254,23 +222,8 @@ impl DoubleBuffer {
     }
 
     /// Extends current buffer with `src` bytes.
-    ///
-    /// # Safety
-    ///
-    /// - ranges of `src` and allocation of current buffer must not overlap
-    unsafe fn extend_nonoverlapping(&mut self, src: &[u8]) {
-        self.curr.reserve(src.len());
-        let dst = self.curr.spare_capacity_mut();
-        unsafe {
-            // Safety:
-            // - caller guarantees ranges of `src` and current vector to
-            //   not overlap.
-            // - capacity is sufficient to accommodate `src` since `reserve` was invoked
-            copy_nonoverlapping(src.as_ptr(), dst.as_mut_ptr().cast(), src.len());
-
-            // Safety: we've just initialized these bytes
-            self.curr.set_len(self.curr.len() + src.len())
-        }
+    fn extend(&mut self, src: &[u8]) {
+        self.curr.extend_from_slice(src);
     }
 }
 
@@ -300,11 +253,11 @@ impl RegionBuffer {
         self.buffer.len() - self.cursor
     }
 
-    /// Calls a pass implementation for provided [`SwitchAuthority`], performing
+    /// Calls a pass implementation for provided [`StateSwitch`], performing
     /// region state switch on the current region buffer.
     ///
     /// Cursor will be reset to `0` after a successful pass
-    pub fn pass<S: SwitchAuthority>(&mut self, authority: &mut S) -> Result<(), RegionError> {
+    pub fn pass<S: StateSwitch>(&mut self, authority: &mut S) -> Result<(), RegionError> {
         self.buffer.authorize_pass(authority)?;
         self.cursor = 0;
 
@@ -328,13 +281,8 @@ impl RegionBuffer {
     ///
     /// Inner buffer will be reallocated if capacity is insufficient
     /// to hold `src` more bytes.
-    ///
-    /// # Safety
-    ///
-    /// - ranges of `src` and internal buffer allocation must not overlap. This
-    ///   is only possible if given `src` derived from `read` method result
-    pub unsafe fn write_nonoverlapping(&mut self, src: &[u8]) {
-        self.buffer.extend_nonoverlapping(src);
+    pub fn write(&mut self, src: &[u8]) {
+        self.buffer.extend(src)
     }
 }
 
@@ -397,8 +345,8 @@ mod private {
     impl<R: Reader> Sealed for Pull<R> {}
 }
 
-/// A trait defining authorized implementation of region switch
-/// fiduciary to get access to region buffer contents.
+/// A trait defining an implementation of region state switch fiduciary to get access
+/// to region buffer contents.
 ///
 /// The region switch is a pass of current state of a region buffer
 /// which main point is to prepare the buffer for streaming next
@@ -406,21 +354,21 @@ mod private {
 ///
 /// # Pull switch
 ///
-/// The [`Pull`] authority implementation is a switch of read pipeline:
-/// new region is read, decompressed and copied into the given
+/// The [`Pull`] implementation is a switch of read pipeline: new
+/// region is read, decompressed and copied into the given
 /// region buffer.
 ///
 /// # Push switch
 ///
-/// The [`Push`] authority implementation is a switch of write pipeline:
-/// current contents of the region buffer compressed, structured into
+/// The [`Push`] implementation is a switch of write pipeline: current
+/// contents of the region buffer compressed, structured into
 /// a region format and flushed into internal destination
-pub(crate) trait SwitchAuthority: private::Sealed {
+pub(crate) trait StateSwitch: private::Sealed {
     /// Perform a state switch on the `buf` passed
     fn pass(&mut self, buf: &mut Vec<u8>) -> Result<(), RegionError>;
 }
 
-/// A [`SwitchAuthority`] implementation for [`StreamDecoder`] operations
+/// A [`StateSwitch`] implementation for [`StreamDecoder`] operations
 ///
 /// [`StreamDecoder`]: crate::decode::StreamDecoder
 pub(crate) struct Pull<R>
@@ -428,7 +376,7 @@ where
     R: Reader,
 {
     stream: DecompressStream,
-    seed: Seed,
+    seed: Option<Seed>,
     source: R,
 }
 
@@ -437,7 +385,7 @@ where
     R: Reader,
 {
     /// Constructs a new [`Pull`] authority with `src` source [`Reader`] and `seed`
-    pub fn new(src: R, seed: Seed) -> Self {
+    pub fn new(src: R, seed: Option<Seed>) -> Self {
         Self {
             stream: DecompressStream::new(),
             source: src,
@@ -446,17 +394,17 @@ where
     }
 
     /// Returns contained reader, consuming `self`
-    pub fn into_source(self) -> R {
+    pub fn into_inner(self) -> R {
         self.source
     }
 
     /// Returns contained region hash seed
-    pub const fn seed(&self) -> Seed {
+    pub const fn seed(&self) -> Option<Seed> {
         self.seed
     }
 }
 
-impl<R> SwitchAuthority for Pull<R>
+impl<R> StateSwitch for Pull<R>
 where
     R: Reader,
 {
@@ -469,7 +417,7 @@ where
 
         let size = HEADER_SIZE + header.compressed_size as usize;
         let bytes = self.source.read_borrow(size).map_err(|e| match e {
-            ReadError::OutOfBounds => RegionError::InvalidSizeTip,
+            ReadError::OutOfBounds => RegionError::InvalidSizeHint,
             #[cfg_attr(not(feature = "std"), allow(unreachable_patterns))]
             _ => e.into(),
         })?;
@@ -507,7 +455,8 @@ where
             buf.set_len(init);
         }
 
-        if self.seed.hash(buf) != header.hash {
+        let hash = self.seed.map(|seed| seed.hash(buf)).unwrap_or(0);
+        if hash != header.hash {
             return Err(RegionError::InvalidHash);
         }
 
@@ -516,7 +465,7 @@ where
     }
 }
 
-/// A [`SwitchAuthority`] implementation for [`WriteBearer`] operations
+/// A [`StateSwitch`] implementation for [`WriteBearer`] operations
 ///
 /// [`WriteBearer`]: crate::encode::WriteBearer
 pub(crate) struct Push<W>
@@ -542,7 +491,7 @@ where
     }
 
     /// Returns contained writer, consuming `self`
-    pub fn into_destination(self) -> W {
+    pub fn into_inner(self) -> W {
         self.destination
     }
 
@@ -552,7 +501,7 @@ where
     }
 }
 
-impl<W> SwitchAuthority for Push<W>
+impl<W> StateSwitch for Push<W>
 where
     W: Writer,
 {

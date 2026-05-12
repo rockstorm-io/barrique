@@ -3,7 +3,7 @@ use crate::decode::{get, Decode, DecodeError, ReadError, Reader, StreamDecoder};
 use crate::encode::{
     write_to_uninit, Encode, EncodeError, StreamEncoder, WriteError, Writer,
 };
-use crate::region::AllocOrd;
+use crate::region::Size;
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -374,7 +374,7 @@ impl FrameDescriptor {
 /// Storing a cat with proc-macro generated implementations:
 ///
 /// ```
-/// use barrique::region::{AllocOrd, Seed};
+/// use barrique::region::{Size, Seed};
 /// use barrique::frame::Frame;
 /// use barrique::{Decode, Encode};
 ///
@@ -474,7 +474,7 @@ where
         }
         self.metadata.encode_into_writer(&mut self.base)?;
 
-        let mut encoder = StreamEncoder::new(self.base, self.seed, AllocOrd::Auto(&value));
+        let mut encoder = StreamEncoder::new(self.base, self.seed, Size::Auto(&value));
         let result = T::encode(&mut encoder, &value);
 
         encoder.flush()?;
@@ -533,7 +533,7 @@ where
     /// # Example
     ///
     /// ```rust, no_run
-    /// use barrique::region::{AllocOrd, Seed};
+    /// use barrique::region::{Size, Seed};
     /// use barrique::frame::Frame;
     ///
     /// let bytes = std::fs::read("serialized.bin").unwrap();
@@ -545,7 +545,7 @@ where
     ///     panic!("Invalid label: possibly incorrect contents");
     /// }
     ///
-    /// let _ = frame.get_value(AllocOrd::manual(bytes.len()));
+    /// let _ = frame.get_value(Size::manual(bytes.len()));
     /// ```
     ///
     /// # Metadata considerations
@@ -555,7 +555,7 @@ where
     /// returned, as the situation described indicates incorrect pipeline for
     /// targeted contents
     #[inline]
-    pub fn get_value(self, ord: AllocOrd) -> Result<T, DecodeError> {
+    pub fn get_value(self, ord: Size) -> Result<T, DecodeError> {
         if self.seed.is_empty() == self.metadata.frame_descriptor.seeded {
             return Err(FrameError::EnvironmentMismatch.into());
         }

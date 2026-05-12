@@ -1,8 +1,9 @@
 use crate::frame::FrameError;
-use crate::region::{AllocOrd, Push, RegionBuffer, RegionError, Seed, REGION_SIZE};
+use crate::region::{Size, Push, RegionBuffer, RegionError, Seed, REGION_SIZE};
+
+use core::mem::MaybeUninit;
 
 use alloc::vec::Vec;
-use core::mem::MaybeUninit;
 
 /// Runtime error for [`Writer`] trait implementation
 ///
@@ -183,12 +184,12 @@ pub trait EncodeBearer: private::Sealed {
 ///
 /// ```
 /// use barrique::encode::{StreamEncoder, Encode};
-/// use barrique::region::{max_encoded_size, AllocOrd};
+/// use barrique::region::{max_encoded_size, Size};
 ///
 /// let value = String::from("That's a barrique");
 /// let mut dst = Vec::with_capacity(max_encoded_size(value.len()));
 ///
-/// let mut bearer = StreamEncoder::new(&mut dst, 0.into(), AllocOrd::Auto(&value));
+/// let mut bearer = StreamEncoder::new(&mut dst, 0.into(), Size::Auto(&value));
 /// <String as Encode>::encode(&mut bearer, &value).unwrap();
 ///
 /// // Final flush performed by the caller
@@ -239,14 +240,14 @@ where
     /// # Allocation semantics
     ///
     /// Each [`StreamEncoder`] constructor call allocates a region buffer with
-    /// initial capacity equal to result of [`AllocOrd`] provided. Such semantics
+    /// initial capacity equal to result of [`Size`] provided. Such semantics
     /// may add (miserable) runtime overhead, but results in a considerable
     /// memory usage decrease for smaller streams.
     ///
     /// If you have access to previously created decoder and your goal is only to
     /// switch the source, consider using [`StreamEncoder::relocate`] method,
     /// which does not reallocate internal buffer
-    pub fn new<E>(dst: W, seed: Seed, ord: AllocOrd<E>) -> Self
+    pub fn new<E>(dst: W, seed: Seed, ord: Size<E>) -> Self
     where
         E: Encode
     {
@@ -295,14 +296,29 @@ where
         self.region_buffer.pass(&mut self.authority)?;
         let old = core::mem::replace(&mut self.authority, Push::new(src, seed));
         
-        Ok(old.into_destination())
+        Ok(old.into_inner())
     }
 
-    /// Flushes the current data in the region buffer
+    /// Flushes the current state of the region buffer
     pub fn flush(&mut self) -> Result<(), RegionError> {
         self.region_buffer.pass(&mut self.authority)?;
         Ok(())
     }
+}
+
+fn test() {
+    let mut dst = vec![];
+    let mut bearer = StreamEncoder::new(&mut dst, 0.into(), Default::default());
+
+    String::encode(&mut bearer, &"".to_string()).unwrap();
+
+    let mut new_dst = vec![];
+    bearer.relocate(&mut new_dst).expect("Failed to relocate the bearer");
+    std::fs::write("serialized_1.bin", &dst).unwrap();
+
+    String::encode(&mut bearer, &"".to_string()).unwrap();
+
+    std::fs::write("serialized_2.bin", new_dst).unwrap();
 }
 
 impl<W> EncodeBearer for StreamEncoder<W>
@@ -319,12 +335,7 @@ where
             self.region_buffer.pass(&mut self.authority)?;
             self.region_buffer.swap();
         }
-
-        unsafe {
-            // Safety: `bytes` can not overlap with internal buffer allocation
-            // since no interface provided to access it
-            self.region_buffer.write_nonoverlapping(bytes);
-        }
+        self.region_buffer.write(bytes);
 
         Ok(())
     }
@@ -350,6 +361,6 @@ pub trait Encode {
     /// [`EncodeBearer`] to write format slice via [`EncodeBearer::write`] method
     fn encode(bearer: &mut impl EncodeBearer, src: &Self) -> Result<(), EncodeError>;
 
-    /// Get a possible or actual size of serialized format of `Self` in bytes.
+    /// Get a possible or an actual size of serialized format of `Self` in bytes.
     fn size_of(&self) -> usize;
 }

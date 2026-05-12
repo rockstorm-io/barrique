@@ -1,4 +1,4 @@
-use crate::region::{AllocOrd, Pull, RegionBuffer, RegionError, Seed};
+use crate::region::{Size, Pull, RegionBuffer, RegionError, Seed};
 use crate::frame::FrameError;
 
 use core::mem::MaybeUninit;
@@ -15,11 +15,11 @@ use core::mem::MaybeUninit;
 ///
 /// ```rust, no_run
 /// use barrique::decode::{get, StreamDecoder};
-/// use barrique::region::AllocOrd;
+/// use barrique::region::Size;
 ///
 /// fn main() {
 ///     let src = vec![];
-///     let mut bearer = StreamDecoder::new(src.as_slice(), Default::default(), AllocOrd::default())
+///     let mut bearer = StreamDecoder::new(src.as_slice(), Default::default(), Size::default())
 ///         .expect("Err is expected since `src` is empty");
 ///
 ///     let _ = get::<String>(&mut bearer);
@@ -151,19 +151,14 @@ pub trait DecodeBearer: private::Sealed {
 /// # Example
 ///
 /// ```rust, no_run
-/// use barrique::decode::{StreamDecoder, Decode};
+/// use barrique::decode::{StreamDecoder, Decode, get};
 /// use core::mem::MaybeUninit;
 ///
-/// let src = std::fs::read("stream.bin").unwrap();
+/// let src = vec![];
 /// let mut bearer = StreamDecoder::new(src.as_slice(), 0.into(), Default::default())
 ///     .unwrap();
 ///
-/// let mut string = MaybeUninit::uninit();
-/// <String as Decode>::decode(&mut bearer, &mut string).unwrap();
-///
-/// // Safety: `Decode` is an unsafe trait and requires implementation to
-/// // initialize the value properly
-/// let string = unsafe { string.assume_init() };
+/// let mut string = get::<String>(&mut bearer).unwrap();
 /// ```
 ///
 /// # Panic
@@ -175,7 +170,7 @@ pub trait DecodeBearer: private::Sealed {
 /// # The trait
 ///
 /// The [`DecodeBearer`] trait is essentially a generic wrapper for this
-/// struct, providing a cleaner interface for implementing type without
+/// struct, providing a simpler interface for implementing type without
 /// trait bounds inclusion and allowing to extend features in
 /// the future without breaking API changes
 pub struct StreamDecoder<R>
@@ -197,7 +192,7 @@ where
     ///
     /// ```
     /// use barrique::decode::StreamDecoder;
-    /// use barrique::region::AllocOrd;
+    /// use barrique::region::Size;
     ///
     /// let src = vec![];
     /// let mut bearer = StreamDecoder::new(src.as_slice(), 0.into(), Default::default());
@@ -210,14 +205,14 @@ where
     /// # Allocation semantics
     ///
     /// Each [`StreamDecoder`] constructor call allocates a region buffer with
-    /// initial capacity equal to result of [`AllocOrd`] provided. Such semantics
+    /// initial capacity equal to result of [`Size`] provided. Such semantics
     /// may add (miserable) runtime overhead, but results in a considerable
     /// memory usage decrease for smaller streams.
     ///
     /// If you have access to previously created decoder and your goal is only to
     /// switch the source, consider using [`StreamDecoder::relocate`] method,
     /// which does not reallocate internal buffer
-    pub fn new(src: R, seed: Seed, ord: AllocOrd) -> Result<Self, RegionError> {
+    pub fn new(src: R, seed: Seed, ord: Size) -> Result<Self, RegionError> {
         let mut bearer = Self {
             region_buffer: RegionBuffer::new(ord.cap()),
             authority: Pull::new(src, seed),
@@ -237,7 +232,7 @@ where
     ///
     /// ```rust, no_run
     /// use barrique::decode::StreamDecoder;
-    /// use barrique::region::AllocOrd;
+    /// use barrique::region::Size;
     ///
     /// let src = std::fs::read("serialized_1.bin").unwrap();
     /// let mut bearer = StreamDecoder::new(src.as_slice(), 0.into(), Default::default())
@@ -251,20 +246,19 @@ where
     ///
     /// // Now we can process contents of the new `src` ...
     /// ```
-    pub fn relocate(&mut self, src: R) -> Result<R, RegionError> {
+    pub fn relocate(&mut self, src: R) -> Result<(), RegionError> {
         self.relocate_with_seed(src, self.authority.seed())
     }
 
-    /// Replaces the source and the seed of this decoder with new values,
-    /// returning the previous source.
+    /// Replaces the source and the seed of this decoder with new values.
     ///
     /// This method differs from the main constructor in a way that it doesn't
     /// reconstruct the inner region buffer, avoiding reallocation.
-    pub fn relocate_with_seed(&mut self, src: R, seed: Seed) -> Result<R, RegionError> {
-        let old = core::mem::replace(&mut self.authority, Pull::new(src, seed));
+    pub fn relocate_with_seed(&mut self, src: R, seed: Seed) -> Result<(), RegionError> {
+        let _ = core::mem::replace(&mut self.authority, Pull::new(src, seed));
         self.region_buffer.pass(&mut self.authority)?;
 
-        Ok(old.into_source())
+        Ok(())
     }
 }
 
@@ -303,7 +297,7 @@ pub enum DecodeError {
 ///
 /// # Safety
 ///
-/// Implementation of a `decode` method must properly initialize given `dst`
+/// Implementation of a `decode` method must initialize `dst`
 pub unsafe trait Decode
 where
     Self: Sized,

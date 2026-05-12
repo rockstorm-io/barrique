@@ -46,11 +46,12 @@ pub fn impl_derive(input: DeriveInput) -> Result<TokenStream> {
     };
 
     let derive_impl = quote! {
-        #[automatically_derived]
+        #[doc(hidden)]
         const _: () = {
             use ::barrique::decode::{Decode, DecodeError, DecodeBearer};
             use ::core::mem::MaybeUninit;
 
+            #[automatically_derived]
             unsafe impl #impl_generics Decode for #ident #ty_generics #where_clause {
                 fn decode(bearer: &mut impl DecodeBearer, dst: &mut MaybeUninit<Self>) -> Result<(), DecodeError>
                 {

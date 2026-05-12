@@ -32,16 +32,19 @@ pub fn impl_derive(input: DeriveInput) -> Result<TokenStream> {
     let ident = &args.ident;
 
     let derive_impl = quote! {
-        #[automatically_derived]
+        #[doc(hidden)]
         const _: () = {
             use ::barrique::encode::{Encode, EncodeError, EncodeBearer};
 
+            #[automatically_derived]
             impl #impl_generics Encode for #ident #ty_generics #where_clause {
+                #[inline]
                 fn encode(bearer: &mut impl EncodeBearer, src: &Self) -> Result<(), EncodeError>
                 {
                     #encode_impl
                 }
 
+                #[inline]
                 fn size_of(&self) -> usize {
                     #size_of_impl
                 }
