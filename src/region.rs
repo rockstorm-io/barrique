@@ -1,9 +1,8 @@
+use crate::encode::{write_to_uninit, WriteError, Writer};
 use crate::decode::{ReadError, Reader};
-use crate::encode::{write_to_uninit, Encode, WriteError, Writer};
 use crate::lz4::{compress_bound, CompressStream, DecompressStream};
 
 use core::slice::SliceIndex;
-use core::num::NonZeroU64;
 
 use alloc::vec::Vec;
 
@@ -22,129 +21,6 @@ pub const fn max_encoded_size(size: usize) -> usize {
     (size / REGION_SIZE) * compress_bound(REGION_SIZE)
         + compress_bound(size - (size / REGION_SIZE) * REGION_SIZE)
         + size.div_ceil(REGION_SIZE) * HEADER_SIZE
-}
-
-/// Seed of a region hash, represented in 8 bytes.
-///
-/// # Examples
-///
-/// ```
-/// use barrique::encode::StreamEncoder;
-/// use barrique::region::Seed;
-///
-/// let seed = Seed::new(0);
-/// let _ = StreamEncoder::new(vec![], Some(seed), Default::default());
-/// ```
-#[derive(Default, Copy, Clone, Debug, PartialEq)]
-#[repr(transparent)]
-pub struct Seed {
-    inner: u64,
-}
-
-// Public methods
-
-impl Seed {
-    /// Constructs a new [`Seed`]
-    pub fn new(seed: u64) -> Self {
-        Self {
-            inner: seed,
-        }
-    }
-}
-
-// Private methods
-
-impl Seed {
-    /// Produces a hash of `bytes` using this [`Seed`]
-    pub(crate) fn hash(&self, bytes: &[u8]) -> u64 {
-        XxHash64::oneshot(self.inner, bytes)
-    }
-}
-
-impl From<u64> for Seed {
-    fn from(seed: u64) -> Self {
-        Self::new(seed)
-    }
-}
-
-impl From<NonZeroU64> for Seed {
-    fn from(seed: NonZeroU64) -> Self {
-        Self::new(seed.get())
-    }
-}
-
-/// A hint of capacity required for bearer to stream a pipeline.
-///
-/// Bearers are inherently pairs of buffers holding some amount of
-/// bytes and operating pointwise on given state of these buffers
-/// and the size of these buffers is limited to 64 KiB. This enum
-/// is essentially capacity value which will be used to allocate
-/// a bearer.
-///
-/// # Example
-///
-/// An example of hinting size of a value which will be encoded:
-///
-/// ```
-/// use barrique::region::{Size, Seed};
-/// use barrique::encode::StreamEncoder;
-///
-/// let value = String::from("Hello, world!");
-/// let ord = Size::Auto(&value);
-///
-/// // `Size::Auto` usually applied to encode bearers only
-/// let mut encoder = StreamEncoder::new(vec![], Seed::new(0), ord);
-///
-/// // Now, if we call value's implementation, bearer will exactly
-/// // fit encoded bytes without any remaining capacity:
-/// // ... <String as Encode>::encode(&mut encoder, &value);
-/// ```
-///
-/// # Default value
-///
-/// Default value of [`Size`] is 4 KiB
-pub enum Size<T = ()>
-where
-    T: Encode,
-{
-    /// An explicitly specified capacity in bytes
-    Manual(isize),
-    /// Capacity derived from `<T as Encode>::size_of` method call
-    Auto(T),
-    /// Hint to allocate the maximum capacity possible
-    Full,
-}
-
-impl Default for Size {
-    fn default() -> Self {
-        Size::Manual(4 * 1024)
-    }
-}
-
-impl Size {
-    /// `Size::<()>::Full`
-    #[inline]
-    pub fn full() -> Self {
-        Size::Full
-    }
-
-    /// `Size::<()>::Manual`
-    #[inline]
-    pub fn manual(count: usize) -> Self {
-        Size::Manual(count as isize)
-    }
-}
-
-impl<T: Encode> Size<T> {
-    /// Returns capacity hinted in bytes
-    #[inline]
-    pub(crate) fn cap(&self) -> usize {
-        match self {
-            Self::Manual(cap) => (*cap).max(0) as usize,
-            Self::Auto(hint) => hint.size_of(),
-            Self::Full => REGION_SIZE * 2,
-        }
-    }
 }
 
 /// An error type returned by region processing related methods
@@ -176,36 +52,33 @@ pub enum RegionError {
 /// smaller passes
 struct DoubleBuffer {
     curr: Vec<u8>,
-    prev: Option<Vec<u8>>,
+    prev: Vec<u8>,
 }
 
 impl DoubleBuffer {
     /// Constructs a new [`DoubleBuffer`] capable of streaming `cap` bytes
     fn new(cap: usize) -> Self {
         let curr = Vec::with_capacity(cap.min(REGION_SIZE));
-        let prev =
-            (cap > REGION_SIZE).then(|| Vec::with_capacity((cap - REGION_SIZE).min(REGION_SIZE)));
+        let prev = if cap > REGION_SIZE {
+            Vec::with_capacity((cap - REGION_SIZE).min(REGION_SIZE))
+        } else {
+            Vec::new()
+        };
 
         Self { curr, prev }
     }
 
     /// Swaps current and previous buffers
     fn swap(&mut self) {
-        let prev = self.prev.get_or_insert_with(|| {
-            // This branch is called only in case of incorrect `Size` hint,
-            // so the allocation is small
-            let predict = if self.curr.len() > 4 * 1024 /* 4 Kib */ { self.curr.len() / 4 } else { 256 };
-            Vec::with_capacity(predict)
-        });
-        core::mem::swap(&mut self.curr, prev);
+        core::mem::swap(&mut self.curr, &mut self.prev);
     }
 
-    /// Invokes `pass` method of the given `authority` with access to current buffer.
+    /// Performs a state switch using `switch`
     ///
     /// Access to contents of [`DoubleBuffer`] achieved via [`StateSwitch`] only, implementations
     /// of which are limited to [`Push`] and [`Pull`]
-    fn authorize_pass<S: StateSwitch>(&mut self, authority: &mut S) -> Result<(), RegionError> {
-        authority.pass(&mut self.curr)
+    fn state_switch<S: StateSwitch>(&mut self, switch: &mut S) -> Result<(), RegionError> {
+        switch.pass(&mut self.curr)
     }
 
     /// Returns the length of the current buffer
@@ -227,16 +100,19 @@ impl DoubleBuffer {
     }
 }
 
-/// A buffer for operations on region stream, containing a [`DoubleBuffer`]
-/// and a cursor for tracking current position
-pub(crate) struct RegionBuffer {
+/// A buffer for operations on region stream, containing a heap-allocated buffer
+/// and a cursor for tracking current position.
+///
+/// Although this struct does not expose public methods, it exported publicly
+/// as a way to reuse allocation between bearers
+pub struct RegionBuffer {
     buffer: DoubleBuffer,
     cursor: usize,
 }
 
 impl RegionBuffer {
     /// Constructs an empty region buffer capable of streaming `cap` bytes
-    pub fn new(cap: usize) -> Self {
+    pub(crate) fn new(cap: usize) -> Self {
         Self {
             buffer: DoubleBuffer::new(cap),
             cursor: 0,
@@ -244,12 +120,12 @@ impl RegionBuffer {
     }
 
     /// Returns remaining capacity of this region buffer
-    pub fn remaining_cap(&self) -> usize {
+    pub(crate) fn remaining_cap(&self) -> usize {
         REGION_SIZE - self.buffer.len()
     }
 
     /// Returns remaining length of this region buffer
-    pub fn remaining_len(&self) -> usize {
+    pub(crate) fn remaining_len(&self) -> usize {
         self.buffer.len() - self.cursor
     }
 
@@ -257,20 +133,20 @@ impl RegionBuffer {
     /// region state switch on the current region buffer.
     ///
     /// Cursor will be reset to `0` after a successful pass
-    pub fn pass<S: StateSwitch>(&mut self, authority: &mut S) -> Result<(), RegionError> {
-        self.buffer.authorize_pass(authority)?;
+    pub(crate) fn pass<S: StateSwitch>(&mut self, switch: &mut S) -> Result<(), RegionError> {
+        self.buffer.state_switch(switch)?;
         self.cursor = 0;
 
         Ok(())
     }
 
     /// Swaps the current buffer with previous
-    pub fn swap(&mut self) {
+    pub(crate) fn swap(&mut self) {
         self.buffer.swap();
     }
 
     /// Reads `n` bytes of this region buffer from the current cursor position
-    pub fn read(&mut self, n: usize) -> Option<&[u8]> {
+    pub(crate) fn read(&mut self, n: usize) -> Option<&[u8]> {
         let bytes = self.buffer.get(self.cursor..self.cursor + n)?;
         self.cursor = self.cursor.saturating_add(n);
 
@@ -281,13 +157,13 @@ impl RegionBuffer {
     ///
     /// Inner buffer will be reallocated if capacity is insufficient
     /// to hold `src` more bytes.
-    pub fn write(&mut self, src: &[u8]) {
+    pub(crate) fn write(&mut self, src: &[u8]) {
         self.buffer.extend(src)
     }
 }
 
 /// Byte size of region header
-const HEADER_SIZE: usize = 12;
+pub(crate) const HEADER_SIZE: usize = 12;
 
 /// In-memory representation of region header.
 ///
@@ -376,7 +252,7 @@ where
     R: Reader,
 {
     stream: DecompressStream,
-    seed: Option<Seed>,
+    seed: Option<u64>,
     source: R,
 }
 
@@ -385,22 +261,12 @@ where
     R: Reader,
 {
     /// Constructs a new [`Pull`] authority with `src` source [`Reader`] and `seed`
-    pub fn new(src: R, seed: Option<Seed>) -> Self {
+    pub fn new(src: R, seed: Option<u64>) -> Self {
         Self {
             stream: DecompressStream::new(),
             source: src,
             seed,
         }
-    }
-
-    /// Returns contained reader, consuming `self`
-    pub fn into_inner(self) -> R {
-        self.source
-    }
-
-    /// Returns contained region hash seed
-    pub const fn seed(&self) -> Option<Seed> {
-        self.seed
     }
 }
 
@@ -432,20 +298,15 @@ where
         );
 
         unsafe {
-            // Safety:
-            // - length set to `0` so no elements need to be initialized.
-            // - `0` is always less or equal to capacity
+            // Safety: `0` is always a valid length
             buf.set_len(0);
         }
 
         buf.reserve(header.alloc_size as usize);
         unsafe {
-            // Safety:
-            // - decompressed data stored in internal buffer inside `RegionBuffer`, semantics
-            //   of which guarantees region buffer to live long enough.
-            // - extremely unlikely that single memory allocation exceeds `c_int::MAX`
-            let init = self
-                .stream
+            // Safety: decompressed data stored in internal buffer inside `RegionBuffer`, semantics
+            // of which guarantees region buffer to live long enough
+            let init = self.stream
                 .decompress(&bytes[HEADER_SIZE..], buf.spare_capacity_mut())
                 .ok_or(RegionError::MalformedRegion)?;
 
@@ -455,7 +316,7 @@ where
             buf.set_len(init);
         }
 
-        let hash = self.seed.map(|seed| seed.hash(buf)).unwrap_or(0);
+        let hash = self.seed.map(|seed| XxHash64::oneshot(seed, buf)).unwrap_or(0);
         if hash != header.hash {
             return Err(RegionError::InvalidHash);
         }
@@ -473,8 +334,8 @@ where
     W: Writer,
 {
     stream: CompressStream,
+    seed: Option<u64>,
     destination: W,
-    seed: Seed,
 }
 
 impl<W> Push<W>
@@ -482,22 +343,12 @@ where
     W: Writer,
 {
     /// Creates a new [`Push`] with `dst` [`Writer`] destination and `seed`
-    pub fn new(dst: W, seed: Seed) -> Self {
+    pub fn new(dst: W, seed: Option<u64>) -> Self {
         Self {
             stream: CompressStream::new(),
             destination: dst,
             seed,
         }
-    }
-
-    /// Returns contained writer, consuming `self`
-    pub fn into_inner(self) -> W {
-        self.destination
-    }
-
-    /// Returns contained region hash seed
-    pub const fn seed(&self) -> Seed {
-        self.seed
     }
 }
 
@@ -518,7 +369,8 @@ where
         }
 
         let size = compress_bound(buf.len()) + HEADER_SIZE;
-        let arena = self.destination.allocate(size)?;
+        let arena = self.destination.write_mut(size)
+            .ok_or(RegionError::OutOfBounds)?;
 
         // Similarly to `Pull` implementation, we check for incorrect implementation
         assert_eq!(
@@ -528,10 +380,8 @@ where
         );
 
         let compressed = unsafe {
-            // Safety:
-            // - uncompressed data stored in internal buffer inside `RegionBuffer`, semantics
-            //   of which guarantees region buffer to live long enough.
-            // - extremely unlikely that single memory allocation exceeds `c_int::MAX`
+            // Safety: uncompressed data stored in internal buffer inside `RegionBuffer`, semantics
+            // of which guarantees region buffer to live long enough
             self.stream
                 .compress(buf, &mut arena[HEADER_SIZE..])
                 .ok_or(RegionError::MalformedRegion)?
@@ -540,15 +390,13 @@ where
         let header = RegionHeader {
             compressed_size: compressed as u16,
             alloc_size: buf.len() as u16,
-            hash: self.seed.hash(buf),
+            hash: self.seed.map(|seed| XxHash64::oneshot(seed, buf)).unwrap_or(0),
         };
-        write_to_uninit(header.into_bytes().as_slice(), arena);
+        write_to_uninit(&header.into_bytes(), arena);
 
         unsafe {
-            // Safety:
-            // - length set to `0` so no elements need to be initialized.
-            // - `0` is always less or equal to capacity.
-            // Note: this is necessary because `extend_nonoverlapping` method extends
+            // Safety: `0` is always a valid length.
+            // Note: this is necessary because `extend` method extends
             // from the length, which is, unlike the cursor, not reset by the
             // region buffer
             buf.set_len(0);
@@ -556,11 +404,12 @@ where
             // Safety:
             // - `compress` call initialized `HEADER_SIZE..compressed` range,
             //   header range initialized by `write_to_uninit` above.
-            // - commitment of `n` can not overflow since `compressed` can't be
+            // - `n` can not overflow since `compressed` can't be
             //   greater than `compress_bound`, which is the size of requested
             //   allocation without header bytes
-            self.destination.commit(HEADER_SIZE + compressed);
+            self.destination.assume_init(HEADER_SIZE + compressed);
         }
+        self.destination.flush()?;
         Ok(())
     }
 }

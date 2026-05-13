@@ -1,9 +1,7 @@
-use crate::region::Seed;
 use crate::decode::{get, Decode, DecodeError, ReadError, Reader, StreamDecoder};
 use crate::encode::{
-    write_to_uninit, Encode, EncodeError, StreamEncoder, WriteError, Writer,
+    write_to_uninit, Encode, EncodeError, StreamEncoder, Writer,
 };
-use crate::region::Size;
 
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
@@ -21,10 +19,10 @@ pub enum FrameError {
     NoMagicNumber,
     #[error("Mismatch between flags found in the metadata and the actual environment")]
     EnvironmentMismatch,
-    #[error("Read error: \"{0}\"")]
-    ReadError(#[from] ReadError),
-    #[error("Write error: \"{0}\"")]
-    WriteError(#[from] WriteError),
+    #[error("Could not access a range because it out of bounds")]
+    OutOfBounds,
+    #[error("Failed to read metadata: {0}")]
+    MetadataError(#[from] ReadError),
 }
 
 /// Frame magic number
@@ -43,13 +41,17 @@ const fn is_magic_num_bytes(bytes: [u8; 4]) -> bool {
 /// An owned frame metadata label, representing a static `ASCII`-only string.
 ///
 /// This struct is provided since the label is restricted to maximum size
-/// of `255` bytes, so storing it in heap-allocated [`String`] would be inefficient.
+/// of `255` bytes, therefore it suitable to be stored inside the stack.
 ///
 /// Label implements [`Deref<Target = str>`] trait, which allow to use it as any other `str` type
 ///
 /// [`Deref<Target = str>`]: Deref
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Label {
+    // Well, I don't think there is a point of boxing such array, not because
+    // of the size, but because how often it will be moved. In most cases
+    // label just checked straight after decoding a frame and the frame dropped
+    // after data was acquired
     buf: [u8; 255],
     len: u8,
 }
@@ -60,6 +62,7 @@ impl Label {
     ///
     /// `None` returned in case of non-`ASCII` input or length which is
     /// greater than `255`
+    #[inline]
     pub fn new(str: &str) -> Option<Self> {
         if !str.is_ascii() || str.len() > 255 {
             return None;
@@ -108,7 +111,7 @@ impl Label {
 
 // Private methods
 impl Label {
-    /// Deserialize a label from the provided [`DecodeBearer`]
+    /// Deserialize a label from `src`
     fn decode_from_reader(src: &mut impl Reader) -> Result<Self, FrameError> {
         let len = src.read_borrow_const::<1>()?[0] as usize;
         src.advance(1);
@@ -129,11 +132,13 @@ impl Label {
         Ok(label)
     }
 
-    /// Serialize this label into the provided [`EncodeBearer`]
-    fn encode_into_writer(&self, dst: &mut impl Writer) -> Result<(), FrameError> {
+    /// Serialize this label into `dst`.
+    ///
+    /// This method doesn't invoke [`Writer::flush`]
+    fn encode_into_writer(&self, dst: &mut impl Writer) -> Option<()> {
         let len = self.len() + 1; // One more byte for a length marker
 
-        let arena = dst.allocate(self.len() + 1)?;
+        let arena = dst.write_mut(self.len() + 1)?;
         assert_eq!(arena.len(), len, "Invalid result of Writer implementation");
 
         arena[0].write(self.len);
@@ -141,9 +146,9 @@ impl Label {
 
         unsafe {
             // Safety: `..len` bytes are initialized
-            dst.commit(len);
+            dst.assume_init(len);
         }
-        Ok(())
+        Some(())
     }
 }
 
@@ -206,7 +211,7 @@ struct FrameMetadata {
 }
 
 impl FrameMetadata {
-    /// Create a new [`FrameMetadata`] from the provided [`DecodeBearer`]
+    /// Create a new [`FrameMetadata`] from `src`
     fn decode_from_reader(src: &mut impl Reader) -> Result<Self, FrameError> {
         let leading_bytes = src.read_borrow_const::<4>()?;
         if !is_magic_num_bytes(leading_bytes) {
@@ -231,28 +236,30 @@ impl FrameMetadata {
         })
     }
 
-    /// Serialize this frame metadata into the provided [`EncodeBearer`]
-    fn encode_into_writer(self, dst: &mut impl Writer) -> Result<(), FrameError> {
-        let len = 4 /* size_of::<u32>() */ + self.frame_descriptor.len();
+    /// Serialize this frame metadata into `dst`.
+    ///
+    /// This method doesn't invoke [`Writer::flush`]
+    fn encode_into_writer(self, dst: &mut impl Writer) -> Option<()> {
+        let len = 4 + self.frame_descriptor.len();
 
         // Since the label handles allocation itself, we're responsible only for writing
         // magic number and a frame descriptor
-        let arena = dst.allocate(len)?;
+        let arena = dst.write_mut(len)?;
         assert_eq!(arena.len(), len, "Invalid result of Writer implementation");
 
         write_to_uninit(&magic_num_bytes(), arena);
         self.frame_descriptor
-            .into_bytes(&mut arena[4 /* size_of::<u32>() */..])
+            .into_bytes(&mut arena[4..])
             .unwrap();
 
         unsafe {
             // Safety: `..len` bytes are initialized
-            dst.commit(len);
+            dst.assume_init(len);
         }
 
         self.label.encode_into_writer(dst)?;
 
-        Ok(())
+        Some(())
     }
 }
 
@@ -289,9 +296,7 @@ const MASK_TIMESTAMP: u8 = 0b01000000;
 /// ```
 #[derive(Debug, Default, Clone)]
 struct FrameDescriptor {
-    /// Flag indicating that region hash is generated with seed
     seeded: bool,
-    /// 8 byte generic timestamp included within descriptor header byte span
     timestamp: Option<u64>,
 }
 
@@ -304,9 +309,7 @@ impl FrameDescriptor {
         let byte = src[0];
 
         let timestamp = if byte & MASK_TIMESTAMP != 0 {
-            Some(u64::from_le_bytes(
-                src.get(1..=8 /* size_of::<u64>()*/)?.try_into().unwrap(),
-            ))
+            Some(u64::from_le_bytes(src.get(1..=8)?.try_into().unwrap()))
         } else {
             None
         };
@@ -346,13 +349,12 @@ impl FrameDescriptor {
 
     /// Get a length of this [`FrameDescriptor`] byte representation
     const fn len(&self) -> usize {
-        // If expression can be replaced with `map_or` when it gets stable const implementation
-        1 + if self.timestamp.is_some() { 8 } else { 0 }
+        1 + self.timestamp.is_some() as usize * 8
     }
 
     /// Return the maximum possible length of [`FrameDescriptor`] byte representation
     const fn max_len() -> usize {
-        1 /* size_of::<u8>() */ + 8 /* size_of::<u64>() */
+        1 + 8
     }
 }
 
@@ -367,14 +369,13 @@ impl FrameDescriptor {
 /// and lazy loaded streams, which can be useful if given data must be initially
 /// verified. Frame descriptor also holds additional flags to verify pipeline
 /// environment (e.g. seed) and a leading magic number will prevent reading
-/// arbitrary contents
+/// arbitrary contents.
 ///
 /// # Example
 ///
 /// Storing a cat with proc-macro generated implementations:
 ///
 /// ```
-/// use barrique::region::{Size, Seed};
 /// use barrique::frame::Frame;
 /// use barrique::{Decode, Encode};
 ///
@@ -402,14 +403,15 @@ impl FrameDescriptor {
 /// };
 /// let mut dst = vec![];
 ///
-/// let frame = Frame::new(&mut dst, Seed::new(0))
+/// let frame = Frame::new(&mut dst)
+///     .with_seed(0)
 ///     .with_label("A cat".try_into().unwrap())
 ///     .with_timestamp(
 ///         SystemTime::now()
 ///             .duration_since(UNIX_EPOCH)
 ///             .unwrap()
 ///             .as_secs()
-/// );
+///     );
 /// frame.encode(cat).unwrap();
 /// ```
 ///
@@ -421,7 +423,7 @@ impl FrameDescriptor {
 pub struct Frame<V, B> {
     _phantom: PhantomData<V>,
     metadata: FrameMetadata,
-    seed: Seed,
+    seed: Option<u64>,
     base: B,
 }
 
@@ -432,13 +434,19 @@ where
 {
     /// Constructs a new [`Frame`] bound to `dst` destination [`Writer`]
     #[inline]
-    pub fn new(dst: W, seed: Seed) -> Self {
+    pub fn new(dst: W) -> Self {
         Self {
             _phantom: Default::default(),
             metadata: Default::default(),
             base: dst,
-            seed,
+            seed: None,
         }
+    }
+
+    /// Specifies a `seed` which will be used to create region hashes of this frame
+    pub fn with_seed(mut self, seed: u64) -> Frame<T, W> {
+        self.seed = Some(seed);
+        self
     }
 
     /// Assigns a [`Label`] to the metadata of this frame
@@ -461,23 +469,26 @@ where
     /// 
     /// ```
     /// use barrique::frame::Frame;
-    /// use barrique::region::Seed;
     ///
     /// let mut dst = vec![];
-    /// let frame = Frame::new(&mut dst, 0.into());
+    /// let frame = Frame::new(&mut dst);
     /// 
     /// frame.encode("Hello, world".to_string()).unwrap();
     /// ```
     pub fn encode(mut self, value: T) -> Result<(), EncodeError> {
-        if !self.seed.is_empty() {
+        if self.seed.is_some() {
             self.metadata.frame_descriptor.seeded = true;
         }
-        self.metadata.encode_into_writer(&mut self.base)?;
 
-        let mut encoder = StreamEncoder::new(self.base, self.seed, Size::Auto(&value));
+        self.metadata.encode_into_writer(&mut self.base).ok_or(FrameError::OutOfBounds)?;
+
+        let mut encoder = StreamEncoder::new(self.base, value.size_of(), self.seed);
         let result = T::encode(&mut encoder, &value);
 
+        // The metadata will not be flushed if `encoder` haven't recieved
+        // anything. I guess it's not a bug, it's a feature!
         encoder.flush()?;
+
         result
     }
 }
@@ -490,15 +501,14 @@ where
     /// Decodes a new [`Frame`] from `src` source [`Reader`].
     ///
     /// Generic `T` value is lazy-decoded, meaning this method will not construct
-    /// [`DecodeBearer`] and decode frame value itself, which allows caller to
+    /// a [`DecodeBearer`] and decode frame value itself, which allows caller to
     /// access metadata values without complete decoding overhead.
     ///
     /// # Error considerations
     ///
     /// This method will only invoke *opening* a frame, that is, reading a header,
     /// so any issues with the encoded value are not revealed yet
-    #[inline]
-    pub fn decode(mut src: R, seed: Seed) -> Result<Self, FrameError> {
+    pub fn decode(mut src: R, seed: Option<u64>) -> Result<Self, FrameError> {
         let metadata = FrameMetadata::decode_from_reader(&mut src)?;
 
         Ok(Self {
@@ -527,25 +537,24 @@ where
 
     /// Returns a deserialized value of this frame.
     ///
-    /// The value is lazy-decoded, meaning that [`DecodeBearer`] will be constructed
+    /// The value is lazy-decoded, meaning that a [`DecodeBearer`] will be constructed
     /// and value decoded only on explicit value access request.
     ///
     /// # Example
     ///
     /// ```rust, no_run
-    /// use barrique::region::{Size, Seed};
-    /// use barrique::frame::Frame;
+    /// use barrique::frame::{Frame, Label};
     ///
     /// let bytes = std::fs::read("serialized.bin").unwrap();
-    /// let frame = Frame::<(), _>::decode(bytes.as_slice(), Seed::new(0))
+    /// let frame = Frame::<(), _>::decode(bytes.as_slice(), Some(0))
     ///     .expect("Failed to open a frame");
     ///
-    /// // Verify the label of our frame
-    /// if frame.get_label() != Some(&"Verified".try_into().unwrap()) {
+    /// // Verify the label of the frame
+    /// if frame.get_label() != Some(&"Cache".try_into().unwrap()) {
     ///     panic!("Invalid label: possibly incorrect contents");
     /// }
     ///
-    /// let _ = frame.get_value(Size::manual(bytes.len()));
+    /// let _ = frame.get_value(4 * 1024);
     /// ```
     ///
     /// # Metadata considerations
@@ -555,12 +564,12 @@ where
     /// returned, as the situation described indicates incorrect pipeline for
     /// targeted contents
     #[inline]
-    pub fn get_value(self, ord: Size) -> Result<T, DecodeError> {
-        if self.seed.is_empty() == self.metadata.frame_descriptor.seeded {
+    pub fn get_value(self, size: usize) -> Result<T, DecodeError> {
+        if self.seed.is_some() != self.metadata.frame_descriptor.seeded {
             return Err(FrameError::EnvironmentMismatch.into());
         }
 
-        let mut decoder = StreamDecoder::new(self.base, self.seed, ord)?;
+        let mut decoder = StreamDecoder::new(self.base, size, self.seed)?;
         get(&mut decoder)
     }
 }

@@ -2,7 +2,7 @@ use crate::decode::struct_::impl_struct;
 use crate::decode::enum_::impl_enum;
 use crate::{DeriveArgs, SkipBy};
 
-use quote::{quote, quote_spanned, ToTokens};
+use quote::{quote, quote_spanned};
 use proc_macro2::TokenStream;
 
 use darling::{Error, FromDeriveInput, Result};
@@ -16,14 +16,13 @@ mod enum_;
 
 /// Returns token stream of a value pasted into skipped field
 pub(super) fn skip_by_value(skip_by: &SkipBy) -> TokenStream {
-    match skip_by {
-        SkipBy::Default => quote! { Default::default() },
-        SkipBy::DefaultExpr(expr) => {
-            let expr = expr.into_token_stream();
+    match &skip_by.expr {
+        Some(expr) => {
             quote_spanned! { expr.span() =>
                 #expr
             }
-        }
+        },
+        _ => quote! { Default::default() }
     }
 }
 

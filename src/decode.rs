@@ -1,4 +1,4 @@
-use crate::region::{Size, Pull, RegionBuffer, RegionError, Seed};
+use crate::region::{Pull, RegionBuffer, RegionError};
 use crate::frame::FrameError;
 
 use core::mem::MaybeUninit;
@@ -14,12 +14,11 @@ use core::mem::MaybeUninit;
 /// # Example
 ///
 /// ```rust, no_run
-/// use barrique::decode::{get, StreamDecoder};
-/// use barrique::region::Size;
+/// use barrique::decode::{StreamDecoderBuilder, get};
 ///
 /// fn main() {
 ///     let src = vec![];
-///     let mut bearer = StreamDecoder::new(src.as_slice(), Default::default(), Size::default())
+///     let mut bearer = StreamDecoderBuilder::new(0).build(src.as_slice())
 ///         .expect("Err is expected since `src` is empty");
 ///
 ///     let _ = get::<String>(&mut bearer);
@@ -56,20 +55,19 @@ pub enum ReadError {
 /// Result of read methods of the [`Reader`] trait
 pub type ReadResult<T> = Result<T, ReadError>;
 
-/// Trait for reading bytes from a source within context of the crate.
+/// A trait defining a read interface.
 ///
-/// # Advancement semantics
-///
-/// - `read_borrow` and `read_borrow_const` never advance a reader.
-/// - `advance` is the only method to advance a reader
+/// This trait fulfills the role of [`io::Read`] for `no_std` environments
+/// and provides an interface more suitable for this crate's implementation
+/// of the serialization pipeline
 pub trait Reader {
-    /// Read exactly `n` bytes
+    /// Read exactly `n` bytes and do not advance the reader
     fn read_borrow(&self, n: usize) -> ReadResult<&[u8]>;
 
     /// Advance the reader by `n` bytes
     fn advance(&mut self, n: usize);
 
-    /// Read exactly constant `N` bytes.
+    /// Read exactly constant `N` bytes and do not advance the reader
     fn read_borrow_const<const N: usize>(&self) -> ReadResult<[u8; N]> {
         let mut buf = [0u8; N];
         buf.copy_from_slice(self.read_borrow(N)?);
@@ -145,27 +143,119 @@ pub trait DecodeBearer: private::Sealed {
     fn read(&mut self, n: usize) -> Result<&[u8], RegionError>;
 }
 
+/// A [`StreamDecoder`] builder.
+/// 
+/// See example in [`StreamDecoder`] documentation
+pub struct StreamDecoderBuilder {
+    region_buffer: RegionBuffer,
+    seed: Option<u64>,
+}
+
+impl StreamDecoderBuilder {
+    /// Creates a new [`StreamDecoderBuilder`].
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use barrique::decode::StreamDecoderBuilder;
+    /// use barrique::encode::{StreamEncoder, StreamEncoderBuilder};
+    ///
+    /// let src = std::fs::read("functional_bros.bin").unwrap();
+    /// let bearer = StreamDecoderBuilder::new(0).build(src.as_slice())
+    ///     .expect("Failed to read the first region");
+    ///
+    /// // Now we can call an `Decode` implementation with this bearer ...
+    /// ```
+    ///
+    /// # Allocation semantics
+    ///
+    /// Each time this constructor is called, it allocates a region buffer with
+    /// initial capacity equal to `size`. Such semantics may add (miserable) runtime
+    /// overhead, but results in a considerable memory usage decrease for smaller streams.
+    ///
+    /// If you have access to previously created decoder and your goal is only to
+    /// switch the source, consider using [`StreamDecoderBuilder::from_raw`] to
+    /// reuse already existing allocation
+    #[inline]
+    pub fn new(size: usize) -> Self {
+        Self {
+            region_buffer: RegionBuffer::new(size),
+            seed: None,
+        }
+    }
+
+    /// Creates a new [`StreamDecoderBuilder`] without allocating a new region buffer
+    /// and instead reusing already existing one.
+    ///
+    /// See example in [`StreamDecoder::into_raw`] documentation
+    #[inline]
+    pub fn from_raw(buffer: RegionBuffer) -> Self {
+        Self {
+            region_buffer: buffer,
+            seed: None,
+        }
+    }
+
+    /// Specifies a `seed` which will be used to create region hashes
+    #[inline]
+    pub fn seed(mut self, seed: u64) -> StreamDecoderBuilder {
+        self.seed = Some(seed);
+        self
+    }
+
+    /// Constructs a new [`StreamDecoder`] with specified parameters and `reader`
+    /// source.
+    ///
+    /// See example in [`StreamDecoderBuilder::new`].
+    ///
+    /// # Seed
+    ///
+    /// If a seed wasn't specified using [`StreamDecoderBuilder::seed`], hash computation
+    /// will be disabled and hash fields will be compared with zeroed hash.
+    ///
+    /// # Error
+    ///
+    /// This method will return an error if decoding the first region has failed
+    pub fn build<R>(self, reader: R) -> Result<StreamDecoder<R>, RegionError>
+    where
+        R: Reader,
+    {
+        let mut decoder = StreamDecoder {
+            region_buffer: self.region_buffer,
+            switch: Pull::new(reader, self.seed)
+        };
+        decoder.region_buffer.pass(&mut decoder.switch)?;
+
+        Ok(decoder)
+    }
+}
+
 /// The one and only [`DecodeBearer`] implementation operating on
 /// region streams.
 ///
 /// # Example
 ///
 /// ```rust, no_run
-/// use barrique::decode::{StreamDecoder, Decode, get};
+/// use barrique::decode::{StreamDecoder, Decode, get, StreamDecoderBuilder};
 /// use core::mem::MaybeUninit;
 ///
-/// let src = vec![];
-/// let mut bearer = StreamDecoder::new(src.as_slice(), 0.into(), Default::default())
+/// let src = std::fs::read("question.bin").unwrap();
+/// let mut bearer = StreamDecoderBuilder::new(4 * 1024)
+///     .seed(0)
+///     .build(src.as_slice())
 ///     .unwrap();
 ///
-/// let mut string = get::<String>(&mut bearer).unwrap();
+/// assert_eq!(
+///     get::<String>(&mut bearer).unwrap(),
+///     "Are you gonna walk into a test chamber?".to_string()
+/// );
 /// ```
 ///
 /// # Panic
 ///
 /// The [`DecodeBearer::read`] implementation will panic if inner
 /// destination [`Reader`] implementation of this decoder returned
-/// incorrect result
+/// incorrect result.
 ///
 /// # The trait
 ///
@@ -178,7 +268,7 @@ where
     R: Reader,
 {
     region_buffer: RegionBuffer,
-    authority: Pull<R>,
+    switch: Pull<R>,
 }
 
 // Public methods
@@ -186,79 +276,53 @@ impl<R> StreamDecoder<R>
 where
     R: Reader,
 {
-    /// Construct a new [`StreamDecoder`] with provided source and [`Seed`].
+    /// Deconstructs this [`StreamDecoder`] into a [`RegionBuffer`] for later reuse.
     ///
     /// # Example
     ///
+    /// Decoding two files:
+    ///
+    /// ```rust,no_run
+    /// use barrique::decode::{StreamDecoderBuilder, get};
+    /// 
+    /// let mut src = std::fs::read("seashell.bin").unwrap();
+    /// let mut bearer = StreamDecoderBuilder::new(0).build(src.as_slice()).unwrap();
+    /// 
+    /// assert_eq!(
+    ///     get::<String>(&mut bearer).unwrap(),
+    ///     "She sells seashells by the seashore".to_string()
+    /// );
+    /// let raw = bearer.into_raw();
+    /// 
+    /// let mut src = std::fs::read("ascii_seashell.bin").unwrap();
+    /// let mut bearer = StreamDecoderBuilder::new(0).build(src.as_slice()).unwrap();
+    /// 
+    /// assert_eq!(
+    ///     get::<u64>(&mut bearer).unwrap(),
+    ///     115104101108108
+    /// );
     /// ```
-    /// use barrique::decode::StreamDecoder;
-    /// use barrique::region::Size;
+    #[inline]
+    pub fn into_raw(self) -> RegionBuffer {
+        self.region_buffer
+    }
+}
+
+impl<R> StreamDecoder<R>
+where
+    R: Reader,
+{
+    /// Creates a new [`StreamDecoder`].
     ///
-    /// let src = vec![];
-    /// let mut bearer = StreamDecoder::new(src.as_slice(), 0.into(), Default::default());
-    ///
-    /// // In this example read of a first region will always fail
-    /// // since we've passed an empty slice
-    /// assert!(bearer.is_err());
-    /// ```
-    ///
-    /// # Allocation semantics
-    ///
-    /// Each [`StreamDecoder`] constructor call allocates a region buffer with
-    /// initial capacity equal to result of [`Size`] provided. Such semantics
-    /// may add (miserable) runtime overhead, but results in a considerable
-    /// memory usage decrease for smaller streams.
-    ///
-    /// If you have access to previously created decoder and your goal is only to
-    /// switch the source, consider using [`StreamDecoder::relocate`] method,
-    /// which does not reallocate internal buffer
-    pub fn new(src: R, seed: Seed, ord: Size) -> Result<Self, RegionError> {
-        let mut bearer = Self {
-            region_buffer: RegionBuffer::new(ord.cap()),
-            authority: Pull::new(src, seed),
+    /// Not exposed publicly in favor of [`StreamDecoderBuilder::build`]
+    pub(crate) fn new(src: R, size: usize, seed: Option<u64>) -> Result<Self, RegionError> {
+        let mut decoder = Self {
+            region_buffer: RegionBuffer::new(size),
+            switch: Pull::new(src, seed)
         };
-        bearer.region_buffer.pass(&mut bearer.authority)?;
+        decoder.region_buffer.pass(&mut decoder.switch)?;
 
-        Ok(bearer)
-    }
-
-    /// Replaces the source of this decoder with a new one
-    ///
-    /// Unlike [`StreamDecoder::relocate_with_seed`], region hash remains
-    /// unchanged, making this method useful in cases of operating on
-    /// the same format.
-    ///
-    /// # Example
-    ///
-    /// ```rust, no_run
-    /// use barrique::decode::StreamDecoder;
-    /// use barrique::region::Size;
-    ///
-    /// let src = std::fs::read("serialized_1.bin").unwrap();
-    /// let mut bearer = StreamDecoder::new(src.as_slice(), 0.into(), Default::default())
-    ///     .expect("Failed to initialize a bearer");
-    ///
-    /// // Doing some work on `src` contents ...
-    ///
-    /// let mut src = std::fs::read("serialized_2.bin").unwrap();
-    /// bearer.relocate(&mut src)
-    ///     .expect("Failed to relocate the bearer");
-    ///
-    /// // Now we can process contents of the new `src` ...
-    /// ```
-    pub fn relocate(&mut self, src: R) -> Result<(), RegionError> {
-        self.relocate_with_seed(src, self.authority.seed())
-    }
-
-    /// Replaces the source and the seed of this decoder with new values.
-    ///
-    /// This method differs from the main constructor in a way that it doesn't
-    /// reconstruct the inner region buffer, avoiding reallocation.
-    pub fn relocate_with_seed(&mut self, src: R, seed: Seed) -> Result<(), RegionError> {
-        let _ = core::mem::replace(&mut self.authority, Pull::new(src, seed));
-        self.region_buffer.pass(&mut self.authority)?;
-
-        Ok(())
+        Ok(decoder)
     }
 }
 
@@ -270,7 +334,7 @@ where
     fn read(&mut self, n: usize) -> Result<&[u8], RegionError> {
         if self.region_buffer.remaining_len() < n {
             self.region_buffer.swap();
-            self.region_buffer.pass(&mut self.authority)?;
+            self.region_buffer.pass(&mut self.switch)?;
         }
 
         // If read failed after a state switch, we assume request
@@ -294,10 +358,26 @@ pub enum DecodeError {
 
 /// A trait for interpreting serialized bytes into instances of the
 /// implementing type.
+/// 
+/// This trait is recommended to be implemented using `#[derive(Decode)]` macro.
+/// 
+/// # Example
+///
+/// Implementing using `Decode` macro (requires `derive` feature):
+/// 
+/// ```
+/// use barrique::Decode;
+///
+/// #[derive(Decode)]
+/// enum Days {
+///     OldDays(u64),
+///     NewDays
+/// }
+/// ```
 ///
 /// # Safety
 ///
-/// Implementation of a `decode` method must initialize `dst`
+/// Implementation of a `decode` method must initialize `dst`.
 pub unsafe trait Decode
 where
     Self: Sized,

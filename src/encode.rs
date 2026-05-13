@@ -1,48 +1,60 @@
 use crate::frame::FrameError;
-use crate::region::{Size, Push, RegionBuffer, RegionError, Seed, REGION_SIZE};
+use crate::region::{Push, RegionBuffer, RegionError, REGION_SIZE};
 
 use core::mem::MaybeUninit;
+use core::error::Error;
 
 use alloc::vec::Vec;
 
-/// Runtime error for [`Writer`] trait implementation
+/// Runtime IO error for [`Writer::write()`] method.
 ///
 /// If `std` feature enabled, [`crate::decode::WriteError::Io`] variant included, as
-/// analogue to [`std::io::Result`]
+/// an alternative to [`std::io::Result`]
 #[derive(Debug, thiserror::Error)]
 pub enum WriteError {
-    #[error("Requested buffer out of bounds")]
-    OutOfBounds,
+    #[error("{0}")]
+    Custom(Box<dyn Error>),
     #[cfg(feature = "std")]
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
 
-/// Result of [`Writer`] implementation methods
-pub type WriteResult<T> = Result<T, WriteError>;
-
-/// Trait for writing bytes into destination within context of the library.
+/// A trait defining an incremental write interface.
 ///
-/// # Allocation semantics
+/// This trait serves not only as an alternative to [`std::io::Write`] for
+/// `no_std`: LZ4 compression used in region encoding requires two separate
+/// source and destination buffers, therefore we need an additional
+/// allocation besides the region buffer. [`Writer::write_mut()`] allows
+/// encoder to write directly into destination and [`Writer::flush`]
+/// serves as a controllable flush.
 ///
-/// If used only within serializing context, caller will request **up to** 64 KiB
-/// per call, but commitment of bytes written can vary depending on data
+/// The writes are incremental because implementations of this trait are also
+/// responsible for tracking amount of written bytes. [`Writer::write_mut()`]
+/// must not increment the cursor
 pub trait Writer {
-    /// Allocate exactly `n` possibly uninitialized bytes caller will write to.
+    /// Get a mutable slice of exactly `n` possibly uninitialized
+    /// bytes the caller will write to without advancing the cursor.
     ///
-    /// # Advancement semantics
-    ///
-    /// [`Writer::allocate`] call must not advance the inner cursor, [`Writer::commit`]
-    /// is the only method to advance a cursor.
-    fn allocate(&mut self, n: usize) -> WriteResult<&mut [MaybeUninit<u8>]>;
+    /// `None` will be returned if `n` is out of bounds
+    fn write_mut(&mut self, n: usize) -> Option<&mut [MaybeUninit<u8>]>;
 
-    /// Commit `n` written bytes and advance the cursor.
+    /// Assume `n` bytes starting from the cursor position as initialized (written)
+    /// and advance the cursor by `n`.
     ///
     /// # Safety
     ///
-    /// - advancing inner cursor by `n` must not overflow current capacity
-    /// - `..n` bytes allocated from current cursor must be uninitialized.
-    unsafe fn commit(&mut self, n: usize);
+    /// - advancing inner cursor by `n` must not overflow current capacity.
+    ///
+    /// - a range of `n` bytes staring from the cursor position must be initialized
+    unsafe fn assume_init(&mut self, n: usize);
+
+    /// Flush this `Writer` into the actual destination.
+    ///
+    /// Implementations of this trait don't have a condition to guarantee data
+    /// reaching its destination unless explicit flush was called
+    fn flush(&mut self) -> Result<(), WriteError> {
+        Ok(())
+    }
 }
 
 // Writer trait implementations for common types
@@ -51,27 +63,28 @@ impl<T> Writer for &mut T
 where
     T: Writer,
 {
-    fn allocate(&mut self, n: usize) -> WriteResult<&mut [MaybeUninit<u8>]> {
-        (**self).allocate(n)
+    fn write_mut(&mut self, n: usize) -> Option<&mut [MaybeUninit<u8>]> {
+        (**self).write_mut(n)
     }
 
-    unsafe fn commit(&mut self, n: usize) {
-        unsafe { (**self).commit(n); }
+    unsafe fn assume_init(&mut self, n: usize) {
+        unsafe { (**self).assume_init(n) }
     }
 }
 
 impl Writer for &mut [u8] {
-    fn allocate(&mut self, n: usize) -> WriteResult<&mut [MaybeUninit<u8>]> {
-        let slice = self.get_mut(n..).ok_or(WriteError::OutOfBounds)?;
+    #[inline]
+    fn write_mut(&mut self, n: usize) -> Option<&mut [MaybeUninit<u8>]> {
+        let slice = self.get_mut(n..)?;
 
-        Ok(unsafe {
+        Some(unsafe {
             // Safety: `Self` assumed to be initialized, to cast to `MaybeUninit` is allowed
             core::slice::from_raw_parts_mut(slice.as_mut_ptr().cast(), slice.len())
         })
     }
 
     #[inline]
-    unsafe fn commit(&mut self, n: usize) {
+    unsafe fn assume_init(&mut self, n: usize) {
         *self = unsafe {
             // Safety: caller guarantees `n` to not overflow
             core::mem::take(self).get_unchecked_mut(n..)
@@ -81,12 +94,12 @@ impl Writer for &mut [u8] {
 
 impl Writer for &mut [MaybeUninit<u8>] {
     #[inline]
-    fn allocate(&mut self, n: usize) -> WriteResult<&mut [MaybeUninit<u8>]> {
-        self.get_mut(n..).ok_or(WriteError::OutOfBounds)
+    fn write_mut(&mut self, n: usize) -> Option<&mut [MaybeUninit<u8>]> {
+        self.get_mut(n..)
     }
 
     #[inline]
-    unsafe fn commit(&mut self, n: usize) {
+    unsafe fn assume_init(&mut self, n: usize) {
         *self = unsafe {
             // Safety: caller guarantees `n` to not overflow
             core::mem::take(self).get_unchecked_mut(n..)
@@ -95,15 +108,16 @@ impl Writer for &mut [MaybeUninit<u8>] {
 }
 
 impl Writer for Vec<u8> {
-    fn allocate(&mut self, n: usize) -> WriteResult<&mut [MaybeUninit<u8>]> {
+    #[inline]
+    fn write_mut(&mut self, n: usize) -> Option<&mut [MaybeUninit<u8>]> {
         self.reserve(n);
 
         let slice = self.spare_capacity_mut();
-        Ok(&mut slice[..n])
+        slice.get_mut(..n)
     }
 
     #[inline]
-    unsafe fn commit(&mut self, n: usize) {
+    unsafe fn assume_init(&mut self, n: usize) {
         unsafe {
             // Safety: caller guarantees bytes to be initialized and the
             // length to not overflow
@@ -172,27 +186,102 @@ pub trait EncodeBearer: private::Sealed {
     fn write(&mut self, bytes: &[u8]) -> Result<(), RegionError>;
 }
 
+/// A [`StreamEncoder`] builder.
+/// 
+/// See example in [`StreamEncoderBuilder::new`]
+pub struct StreamEncoderBuilder {
+    region_buffer: RegionBuffer,
+    seed: Option<u64>,
+}
+
+impl StreamEncoderBuilder {
+    /// Creates a new [`StreamEncoderBuilder`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use barrique::encode::{StreamEncoder, StreamEncoderBuilder};
+    ///
+    /// let mut dst = vec![];
+    /// let bearer = StreamEncoderBuilder::new(4 * 1024).build(&mut dst);
+    ///
+    /// // Now we can call an `Encode` implementation with this bearer ...
+    /// ```
+    ///
+    /// # Allocation semantics
+    ///
+    /// Each time this constructor is called, it allocates a region buffer with
+    /// initial capacity equal to `size`. Such semantics may add (miserable) runtime
+    /// overhead, but results in a considerable memory usage decrease for smaller streams.
+    ///
+    /// If you have access to previously created encoder and your goal is only to
+    /// switch the source, consider using [`StreamEncoderBuilder::from_raw`] to
+    /// reuse already existing allocation
+    pub fn new(size: usize) -> Self {
+        Self {
+            region_buffer: RegionBuffer::new(size),
+            seed: None,
+        }
+    }
+
+    /// Creates a new [`StreamEncoderBuilder`] without allocating a new region buffer
+    /// and instead reusing already existing one.
+    ///
+    /// See example in [`StreamEncoder::into_raw`] documentation
+    pub fn from_raw(buffer: RegionBuffer) -> Self {
+        Self {
+            region_buffer: buffer,
+            seed: None,
+        }
+    }
+
+    /// Specifies a `seed` which will be used to create region hashes
+    pub fn seed(mut self, seed: u64) -> StreamEncoderBuilder {
+        self.seed = Some(seed);
+        self
+    }
+
+    /// Constructs a new [`StreamEncoder`] with specified parameters and `writer`
+    /// destination.
+    ///
+    /// See example in [`StreamEncoderBuilder::new`].
+    ///
+    /// # Seed
+    ///
+    /// If a seed wasn't specified using [`StreamEncoderBuilder::seed`], hash computation
+    /// will be disabled and hash field in region headers will be zeroed.
+    pub fn build<W>(self, writer: W) -> StreamEncoder<W>
+    where
+        W: Writer,
+    {
+        StreamEncoder {
+            region_buffer: self.region_buffer,
+            switch: Push::new(writer, self.seed)
+        }
+    }
+}
+
 /// The one and only [`EncodeBearer`] implementation operating on
 /// region streams.
 ///
-/// Flushes are performed automatically when the region buffer is full,
-/// but the final flush must be invoked by a caller explicitly.
+/// Flushes are performed automatically when the region buffer is full, but the final
+/// flush should be performed by a user explicitly.
 ///
 /// # Example
 ///
-/// Encoding a [`String`]:
+/// Encoding a [`String`] and specifying a seed:
 ///
 /// ```
-/// use barrique::encode::{StreamEncoder, Encode};
-/// use barrique::region::{max_encoded_size, Size};
+/// use barrique::encode::{StreamEncoder, Encode, StreamEncoderBuilder};
+/// use barrique::region::max_encoded_size;
 ///
 /// let value = String::from("That's a barrique");
-/// let mut dst = Vec::with_capacity(max_encoded_size(value.len()));
+/// let size = max_encoded_size(value.len());
 ///
-/// let mut bearer = StreamEncoder::new(&mut dst, 0.into(), Size::Auto(&value));
-/// <String as Encode>::encode(&mut bearer, &value).unwrap();
+/// let mut dst = Vec::with_capacity(size);
+/// let mut bearer = StreamEncoderBuilder::new(size).seed(0).build(&mut dst);
+/// String::encode(&mut bearer, &value).unwrap();
 ///
-/// // Final flush performed by the caller
 /// bearer.flush().unwrap();
 /// ```
 ///
@@ -200,7 +289,7 @@ pub trait EncodeBearer: private::Sealed {
 ///
 /// The [`EncodeBearer::write`] implementation will panic if inner
 /// destination [`Writer`] implementation of this encoder returned
-/// incorrect result
+/// incorrect result.
 ///
 /// # The trait
 ///
@@ -213,112 +302,63 @@ where
     W: Writer,
 {
     region_buffer: RegionBuffer,
-    authority: Push<W>,
+    switch: Push<W>,
 }
 
 impl<W> StreamEncoder<W>
 where
     W: Writer,
 {
-    /// Constructs a new [`StreamEncoder`] with provided destination and [`Seed`].
+    /// Deconstructs this [`StreamEncoder`] into a [`RegionBuffer`] for later reuse.
     ///
     /// # Example
     ///
-    /// ```
-    /// use barrique::encode::StreamEncoder;
-    /// use barrique::region::Seed;
+    /// Encoding two files:
     ///
-    /// let mut dst = vec![];
-    /// let bearer = StreamEncoder::new(&mut dst, Seed::empty(), Default::default());
-    ///
-    /// // Now we can call an `Encode` implementation on this bearer ...
-    /// ```
-    ///
-    /// Note on the example: hash will be always zero because [`Seed::empty`] is
-    /// an explicit market that the hash computation must be disabled.
-    ///
-    /// # Allocation semantics
-    ///
-    /// Each [`StreamEncoder`] constructor call allocates a region buffer with
-    /// initial capacity equal to result of [`Size`] provided. Such semantics
-    /// may add (miserable) runtime overhead, but results in a considerable
-    /// memory usage decrease for smaller streams.
-    ///
-    /// If you have access to previously created decoder and your goal is only to
-    /// switch the source, consider using [`StreamEncoder::relocate`] method,
-    /// which does not reallocate internal buffer
-    pub fn new<E>(dst: W, seed: Seed, ord: Size<E>) -> Self
-    where
-        E: Encode
-    {
-        Self {
-            region_buffer: RegionBuffer::new(ord.cap()),
-            authority: Push::new(dst, seed),
-        }
-    }
-
-    /// Flushes the region buffer and replaces the destination of this encoder
-    /// with the new one, returning the previous destination
-    ///
-    /// Unlike [`StreamEncoder::relocate_with_seed`], region hash remains
-    /// unchanged, making this method useful in cases of operating on
-    /// the same format.
-    ///
-    /// # Example
-    ///
-    /// ```rust, no_run
-    /// use barrique::encode::StreamEncoder;
-    /// use barrique::region::Seed;
-    ///
-    /// let mut dst = vec![];
-    /// let mut bearer = StreamEncoder::new(&mut dst, 0.into(), Default::default());
-    ///
-    /// // Encoding a first value ...
-    ///
-    /// let mut new_dst = vec![];
-    /// let old_dst = bearer.relocate(&mut new_dst).expect("Failed to relocate the bearer");
-    /// std::fs::write("serialized_1.bin", &old_dst).unwrap();
+    /// ```rust,no_run
+    /// use barrique::encode::StreamEncoderBuilder;
+    /// use barrique::encode::Encode;
     /// 
-    /// // Encoding a second value ...
-    /// 
-    /// std::fs::write("serialized_2.bin", new_dst).unwrap();
-    /// ```
-    pub fn relocate(&mut self, src: W) -> Result<W, RegionError> {
-        self.relocate_with_seed(src, self.authority.seed())
-    }
-
-    /// Flushes current content of the region buffer and replaces the destination
-    /// and seed of this encoder with the new values.
+    /// let mut dst = vec![];
+    /// let mut bearer = StreamEncoderBuilder::new(0).build(&mut dst);
     ///
-    /// This method differs from the main constructor in a way that it doesn't
-    /// reconstruct the inner region buffer, avoiding reallocation.
-    pub fn relocate_with_seed(&mut self, src: W, seed: Seed) -> Result<W, RegionError> {
-        self.region_buffer.pass(&mut self.authority)?;
-        let old = core::mem::replace(&mut self.authority, Push::new(src, seed));
-        
-        Ok(old.into_inner())
+    /// // Let's encode a String into the first file
+    /// String::encode(&mut bearer, &"She sells seashells by the seashore".into()).unwrap();
+    /// let raw = bearer.into_raw();
+    ///
+    /// std::fs::write("seashell.bin", &dst).unwrap();
+    ///
+    /// let mut bearer = StreamEncoderBuilder::from_raw(raw).build(&mut dst);
+    ///
+    /// // ... then an u64 into the second file
+    /// u64::encode(&mut bearer, &115104101108108).unwrap();
+    /// bearer.flush().unwrap();
+    ///
+    /// std::fs::write("ascii_seashell.bin", &dst).unwrap();
+    /// ```
+    pub fn into_raw(self) -> RegionBuffer {
+        self.region_buffer
     }
 
-    /// Flushes the current state of the region buffer
+    /// Flushes current state of the region buffer
     pub fn flush(&mut self) -> Result<(), RegionError> {
-        self.region_buffer.pass(&mut self.authority)?;
-        Ok(())
+        self.region_buffer.pass(&mut self.switch)
     }
 }
 
-fn test() {
-    let mut dst = vec![];
-    let mut bearer = StreamEncoder::new(&mut dst, 0.into(), Default::default());
-
-    String::encode(&mut bearer, &"".to_string()).unwrap();
-
-    let mut new_dst = vec![];
-    bearer.relocate(&mut new_dst).expect("Failed to relocate the bearer");
-    std::fs::write("serialized_1.bin", &dst).unwrap();
-
-    String::encode(&mut bearer, &"".to_string()).unwrap();
-
-    std::fs::write("serialized_2.bin", new_dst).unwrap();
+impl<W> StreamEncoder<W>
+where
+    W: Writer,
+{
+    /// Creates a new [`StreamEncoder`].
+    ///
+    /// Not exposed publicly in favor of [`StreamEncoderBuilder::build`]
+    pub(crate) fn new(dst: W, size: usize, seed: Option<u64>) -> Self {
+        Self {
+            region_buffer: RegionBuffer::new(size),
+            switch: Push::new(dst, seed),
+        }
+    }
 }
 
 impl<W> EncodeBearer for StreamEncoder<W>
@@ -332,7 +372,7 @@ where
         }
 
         if self.region_buffer.remaining_cap() < bytes.len() {
-            self.region_buffer.pass(&mut self.authority)?;
+            self.region_buffer.pass(&mut self.switch)?;
             self.region_buffer.swap();
         }
         self.region_buffer.write(bytes);
@@ -354,6 +394,25 @@ pub enum EncodeError {
 
 /// A trait defining serialization of implementing type into a byte representation
 /// for continuous storage.
+///
+/// This trait is recommended to be implemented using `#[derive(Encode)]` procedural macro.
+///
+/// # Example
+///
+/// Implementing using `Encode` macro (requires `derive` feature):
+///
+/// ```rust,no_run
+/// use barrique::Encode;
+///
+/// // Nothing fancy, right?
+///
+/// #[derive(Encode)]
+/// struct Time {
+///     old_days: u64,
+/// }
+/// ```
+/// 
+/// See documentation on attributes in [`barrique_derive`]
 pub trait Encode {
     /// Serialize `Self`, by requesting `bearer` to write encoded bytes.
     ///
@@ -361,6 +420,6 @@ pub trait Encode {
     /// [`EncodeBearer`] to write format slice via [`EncodeBearer::write`] method
     fn encode(bearer: &mut impl EncodeBearer, src: &Self) -> Result<(), EncodeError>;
 
-    /// Get a possible or an actual size of serialized format of `Self` in bytes.
+    /// Get a possible or an actual size of serialized format of `Self`, in bytes
     fn size_of(&self) -> usize;
 }

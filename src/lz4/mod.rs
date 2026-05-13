@@ -6,7 +6,7 @@
 //! because LZ4 `_continue` functions require previous data (source in case of compress
 //! pass, destination in case of decompress pass) to be present at the same address of
 //! memory until 64 KiB window has been streamed or stream freed, explicit lifetime
-//! elision of which wasn't succeeded with context of this crate
+//! elision of which wasn't succeeded
 
 use core::mem::MaybeUninit;
 use core::ptr::NonNull;
@@ -23,9 +23,10 @@ pub struct CompressStream {
 }
 
 impl CompressStream {
-    /// Create new [`CompressStream`] via `LZ4_createStream` initializer call.
+    /// Creates new [`CompressStream`] via `LZ4_createStream` initializer call.
     ///
     /// This method will panic if initializer returned `NULL` pointer
+    #[inline]
     pub fn new() -> Self {
         #[cfg(not(miri))]
         {
@@ -43,19 +44,18 @@ impl CompressStream {
         }
     }
 
-    /// Compress the source to the potentially uninitialized destination buffer via
+    /// Compresses the source to the potentially uninitialized destination buffer via
     /// `LZ4_compress_continue`, keeping the context of this encoding stream,
     /// which can improve compression ratios for smaller passes.
     ///
     /// Returned `Some` is an amount of bytes written into `dst`, `None` returned in case
     /// of unsuccessful compression or insufficient destination buffer length.
     ///
-    /// ## Safety
+    /// # Safety
     ///
     /// - the previous 64 KiB of streamed `src` data *must* remain present, unmodified,
     ///   at same address in memory.
-    ///
-    /// - `src` length must not exceed [`c_int::MAX`]
+    #[inline]
     pub unsafe fn compress(&self, src: &[u8], dst: &mut [MaybeUninit<u8>]) -> Option<usize> {
         #[cfg(not(miri))]
         {
@@ -110,9 +110,10 @@ pub struct DecompressStream {
 }
 
 impl DecompressStream {
-    /// Create new [`DecompressStream`] via `LZ4_createStreamDecode` initializer call.
+    /// Creates new [`DecompressStream`] via `LZ4_createStreamDecode` initializer call.
     ///
     /// This method will panic if initializer returned `NULL` pointer
+    #[inline]
     pub fn new() -> Self {
         #[cfg(not(miri))]
         {
@@ -130,7 +131,7 @@ impl DecompressStream {
         }
     }
 
-    /// Decompress the source into the potentially uninitialized destination buffer using
+    /// Decompresses the source into the potentially uninitialized destination buffer using
     /// `LZ4_decompress_safe_continue`, keeping the context of this decoding stream,
     /// which can improve compression ratios for smaller passes.
     ///
@@ -141,8 +142,7 @@ impl DecompressStream {
     ///
     /// - the last 64 KiB of previously decoded data *must* remain available and unmodified
     ///   at the memory position where they were previously decoded
-    ///
-    /// - lengths of `src` and `dst` must not exceed [`c_int::MAX`]
+    #[inline]
     pub unsafe fn decompress(&self, src: &[u8], dst: &mut [MaybeUninit<u8>]) -> Option<usize> {
         #[cfg(not(miri))]
         {

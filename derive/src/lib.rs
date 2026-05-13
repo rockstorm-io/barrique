@@ -22,15 +22,21 @@ pub(crate) struct Field {
     encode_with: Option<ExprPath>,
     #[darling(default)]
     decode_with: Option<ExprPath>,
-    
+
     skip: Option<SkipBy>,
 }
 
 #[derive(FromMeta)]
-#[darling(from_word = || Ok(Self::Default))]
-enum SkipBy {
-    Default,
-    DefaultExpr(Expr),
+#[darling(from_expr = |expr| Ok(Self::from(expr)))]
+struct SkipBy {
+    #[darling(default)]
+    expr: Option<Expr>,
+}
+
+impl From<&Expr> for SkipBy {
+    fn from(expr: &Expr) -> Self {
+        Self { expr: Some(expr.clone()) }
+    }
 }
 
 #[derive(FromVariant)]
